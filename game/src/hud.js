@@ -1,3 +1,7 @@
+let healthBar;
+let moneyLabel;
+let healthFill;
+
 export function createHUD() {
   const hud = document.createElement('div');
   hud.style.cssText = 'position: fixed; top: 10px; left: 10px; color: white; font-family: sans-serif; font-size: 14px; text-shadow: 1px 1px 2px black; z-index: 100;';
@@ -31,6 +35,7 @@ export function createHUD() {
 }
 
 export function updateHUD() {
+  if (!moneyLabel) return;
   // Update money display
   moneyLabel.textContent = '$0';
 }

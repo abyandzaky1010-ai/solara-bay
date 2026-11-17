@@ -1,10 +1,12 @@
 // Main game loop for the GTA-style open world
 import * as THREE from 'three';
 import { createWorld } from './world.js';
-import { initPlayer, getCamera, getCar } from './player.js';
+import { initPlayer, getCamera, getCar, getBody, setCar, update } from './player.js';
 import { initCar, checkInteraction } from './car.js';
-// import { initHUD, updateHUD, addWantedStars } from './hud.js';
+import { initHUD, updateHUD } from './hud.js';
 import { initInput, keys, updateMouseLocked } from './input.js';
+
+initInput();
 
 const canvas = document.getElementById('game');
 if (!canvas) {
@@ -22,7 +24,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const world = createWorld(scene);
 
 initPlayer(scene);
-initCar(scene, { getBody: () => { return { position: { x: 0, z: 0 } }; }, setCar: () => {} });
+initCar(scene, { getBody, setCar });
 const hudCanvas = document.createElement('canvas');
 hudCanvas.id = 'hud';
 hudCanvas.style.cssText = 'position: absolute; top: 0; right: 0; z-index: 50;';
@@ -39,9 +41,6 @@ window.addEventListener('resize', () => {
   }
 });
 
-window.addEventListener('keydown', (e) => {
-});
-
 let lastTime = performance.now();
 let accumulator = 0;
 const STEP = 1 / 60;
@@ -52,7 +51,7 @@ function gameLoop(now) {
   const deltaTime = Math.min((now - lastTime) / 1000, MAX_FRAME);
   lastTime = now;
   updateMouseLocked();
-  initPlayer.update(deltaTime);
+  update(deltaTime);
   updateHUD();
   renderer.render(scene, getCamera());
 }

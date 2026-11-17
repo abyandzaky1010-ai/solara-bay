@@ -149,49 +149,12 @@ export function update(deltaTime) {
   }
 }
 
-export function updatePlayerOld(deltaTime) {
-  if (isOnFoot && playerBody) {
-    playerBody.visible = true;
-    playerBody.position.copy(carObj.position);
-    playerBody.position.y = 0;
-    releasePointerLock();
-  } else {
-    playerBody.visible = false;
-    requestPointerLock();
-  }
-}
-
 export function getCar() {
   return inCar;
 }
 
 export function getBody() {
   return playerBody;
-}
-
-export function update(deltaTime) {
-  updateMouseLocked();
-  if (isOnFoot && playerBody) {
-    let moveSpeed = SPEED;
-    if (keys['ShiftLeft'] || keys['ShiftRight']) moveSpeed *= SPRINT_MULTIPLIER;
-    const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), playerBody.rotation.y);
-    const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), playerBody.rotation.y);
-    const moveDir = new THREE.Vector3();
-    if (keys['KeyW']) moveDir.add(forward);
-    if (keys['KeyS']) moveDir.sub(forward);
-    if (keys['KeyD']) moveDir.add(right);
-    if (keys['KeyA']) moveDir.sub(right);
-    if (moveDir.length() > 0) {
-      moveDir.normalize().multiplyScalar(moveSpeed * deltaTime);
-      playerBody.position.add(moveDir);
-    }
-    playerBody.position.x = Math.max(-180, Math.min(180, playerBody.position.x));
-    playerBody.position.z = Math.max(-180, Math.min(180, playerBody.position.z));
-    camera.position.set(playerBody.position.x - Math.sin(mouse.x * MOUSE_SENSITIVITY) * CAMERA_DISTANCE, CAMERA_HEIGHT, playerBody.position.z - Math.cos(mouse.x * MOUSE_SENSITIVITY) * CAMERA_DISTANCE);
-    camera.lookAt(playerBody.position.x, 1, playerBody.position.z);
-    playerBody.rotation.y = mouse.x * MOUSE_SENSITIVITY;
-  }
-    updateDriving(deltaTime);
 }
 
 export function getCamera() {
