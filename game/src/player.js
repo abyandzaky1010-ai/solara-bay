@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { keys, mouse, requestPointerLock, releasePointerLock, updateMouseLocked } from './input.js';
 import { PALETTE } from './palette.js';
+import { getCar as getParkedCar } from './car.js';
 
 const SPEED = 8;
 const SPRINT_MULTIPLIER = 1.8;
@@ -15,6 +16,19 @@ let inCar = null;
 let nearbyCars = [];
 let wasInteractionPressed = false;
 let exitPosition = null;
+
+// Gather every car the player is allowed to enter. `nearbyCars` can be
+// populated via setCars(), and the parked car from car.js is always a
+// candidate so the player has something to hop into right at spawn.
+function gatherEnterableCars() {
+  const candidates = [];
+  const parked = getParkedCar ? getParkedCar() : null;
+  if (parked) candidates.push(parked);
+  for (const car of nearbyCars) {
+    if (car && !candidates.includes(car)) candidates.push(car);
+  }
+  return candidates;
+}
 
 export function initPlayer(sceneArg, cameraArg, carsArg = []) {
   scene = sceneArg;
@@ -34,6 +48,7 @@ export function initPlayer(sceneArg, cameraArg, carsArg = []) {
 }
 
 export function setCar(carObj) {
+  if (!playerBody) return;
   if (inCar === carObj) return;
 
   if (inCar) {
@@ -45,12 +60,15 @@ export function setCar(carObj) {
   isOnFoot = !carObj;
   if (carObj) {
     carObj.userData.playerDriving = true;
+    exitPosition = null;
     playerBody.visible = false;
     mouse.x = carObj.rotation.y / MOUSE_SENSITIVITY;
   } else {
     if (exitPosition) playerBody.position.copy(exitPosition);
     playerBody.position.y = 0;
+    playerBody.rotation.y = mouse.x * MOUSE_SENSITIVITY;
     playerBody.visible = true;
+    exitPosition = null;
   }
 }
 
@@ -62,7 +80,7 @@ export function findNearbyCar(maxDistance = 5) {
   if (!isOnFoot || !playerBody) return null;
   let closestCar = null;
   let closestDistance = maxDistance * maxDistance;
-  for (const candidateCar of nearbyCars) {
+  for (const candidateCar of gatherEnterableCars()) {
     if (!candidateCar || candidateCar.userData.playerDriving) continue;
     const distanceSquared = candidateCar.position.distanceToSquared(playerBody.position);
     if (distanceSquared <= closestDistance) {

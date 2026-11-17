@@ -2,7 +2,8 @@
 import * as THREE from 'three';
 import { createWorld } from './world.js';
 import { initPlayer, getCamera, getCar, getBody, setCar, update } from './player.js';
-import { initCar, checkInteraction } from './car.js';
+import { initCar, checkInteraction, spawnTrafficCars, updateTraffic } from './car.js';
+import { spawnPedestrians, updatePedestrians } from './city.js';
 import { createHUD, updateHUD } from './hud.js';
 import { initInput, keys, updateMouseLocked } from './input.js';
 
@@ -26,6 +27,8 @@ const world = createWorld(scene);
 
 initPlayer(scene);
 initCar(scene, { getBody, setCar });
+spawnTrafficCars(scene);
+spawnPedestrians(scene);
 const hudCanvas = document.createElement('canvas');
 hudCanvas.id = 'hud';
 hudCanvas.style.cssText = 'position: absolute; top: 0; right: 0; z-index: 50;';
@@ -53,6 +56,8 @@ function gameLoop(now) {
   lastTime = now;
   updateMouseLocked();
   update(deltaTime);
+  updateTraffic();
+  updatePedestrians(deltaTime);
   updateHUD();
   renderer.render(scene, getCamera());
 }
