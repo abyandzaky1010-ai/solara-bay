@@ -1,28 +1,29 @@
-// Input handling: keyboard and mouse for player movement and camera control
-export const keys = {};
-export const mouse = { x: 0, y: 0, locked: false };
+export const keys = {
+  forward: false,
+  backward: false,
+  left: false,
+  right: false,
+};
 
-export function initInput() {
-  window.addEventListener('keydown', (e) => { keys[e.code] = true; });
-  window.addEventListener('keyup', (e) => { keys[e.code] = false; });
-  window.addEventListener('mousemove', (e) => {
-    if (mouse.locked) {
-      mouse.x += e.movementX;
-      mouse.y += e.movementY;
+export function updateKeys(event) {
+  if (event.type === 'keydown' || event.type === 'keyup') {
+    const pressed = event.type === 'keydown';
+    switch (event.key) {
+      case 'w': case 'ArrowUp': keys.forward = pressed; break;
+      case 's': case 'ArrowDown': keys.backward = pressed; break;
+      case 'a': case 'ArrowLeft': keys.left = pressed; break;
+      case 'd': case 'ArrowRight': keys.right = pressed; break;
     }
-  });
+  }
 }
 
-export function requestPointerLock() {
-  const canvas = document.querySelector('canvas');
-  if (canvas) canvas.requestPointerLock();
-}
-
-export function releasePointerLock() {
-  document.exitPointerLock();
-}
+export const mouse = { x: 0 };
 
 export function updateMouseLocked() {
-  const canvas = document.querySelector('canvas');
-  mouse.locked = !!canvas && document.pointerLockElement === canvas;
+  mouse.x += 0.005;
+}
+
+export function initInput() {
+  document.addEventListener('keydown', updateKeys);
+  document.addEventListener('keyup', updateKeys);
 }
