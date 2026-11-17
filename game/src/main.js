@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { createWorld } from './world.js';
 import { initPlayer, getCamera, getCar, getBody, setCar, update } from './player.js';
 import { initCar, checkInteraction } from './car.js';
-import { initHUD, updateHUD } from './hud.js';
+import { createHUD, updateHUD } from './hud.js';
 import { initInput, keys, updateMouseLocked } from './input.js';
 
 initInput();
