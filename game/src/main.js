@@ -4,7 +4,7 @@ import { createWorld } from './world.js';
 import { initPlayer, getCamera, getCar, getBody, setCar, update } from './player.js';
 import { initCar, checkInteraction, spawnTrafficCars, updateTraffic } from './car.js';
 import { spawnPedestrians, updatePedestrians } from './city.js';
-import { createHUD, updateHUD } from './hud.js';
+import { createHUD, updateHUD, setWantedLevel } from './hud.js';
 import { initInput, keys, updateMouseLocked } from './input.js';
 
 initInput();
@@ -50,6 +50,21 @@ let accumulator = 0;
 const STEP = 1 / 60;
 const MAX_FRAME = 0.25;
 
+// --- Wanted level ---
+let wantedLevel = 0;
+let wantedTimer = 0;
+const WANTED_DECAY_SECONDS = 20;
+let previousCar = null;
+
+export function addWanted(n) {
+  wantedLevel = Math.max(0, Math.min(5, wantedLevel + n));
+  wantedTimer = 0;
+}
+
+export function getWantedLevel() {
+  return wantedLevel;
+}
+
 function gameLoop(now) {
   requestAnimationFrame(gameLoop);
   const deltaTime = Math.min((now - lastTime) / 1000, MAX_FRAME);
@@ -58,6 +73,26 @@ function gameLoop(now) {
   update(deltaTime);
   updateTraffic();
   updatePedestrians(deltaTime);
+
+  // Stealing a car is a crime: raise wanted level when entering a car.
+  const currentCar = getCar();
+  if (currentCar && !previousCar) {
+    addWanted(1);
+  }
+  previousCar = currentCar;
+
+  // Decay the wanted level if no new crime has been committed.
+  if (wantedLevel > 0) {
+    wantedTimer += deltaTime;
+    if (wantedTimer >= WANTED_DECAY_SECONDS) {
+      wantedLevel = Math.max(0, wantedLevel - 1);
+      wantedTimer = 0;
+    }
+  } else {
+    wantedTimer = 0;
+  }
+  setWantedLevel(wantedLevel);
+
   updateHUD();
   renderer.render(scene, getCamera());
 }
