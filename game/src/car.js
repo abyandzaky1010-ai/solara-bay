@@ -81,3 +81,4 @@ export function checkInteraction() {
   const dist = player.getBody().position.distanceTo(parkedCar.position);
   return dist < 3 ? parkedCar : null;
 }
+export const GAME_TITLE = "Solara Bay";
