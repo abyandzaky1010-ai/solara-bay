@@ -9,14 +9,14 @@ export function createHUD() {
   // Health bar
   const healthLabel = document.createElement('div');
   healthLabel.textContent = 'Health';
-  const healthBar = document.createElement('div');
+  healthBar = document.createElement('div');
   healthBar.style.cssText = 'width: 150px; height: 16px; background: #333; border: 2px solid white; margin-bottom: 5px;';
-  const healthFill = document.createElement('div');
+  healthFill = document.createElement('div');
   healthFill.style.cssText = 'width: 100%; height: 100%; background: #3f8fa3;';
   healthBar.appendChild(healthFill);
   
   // Money
-  const moneyLabel = document.createElement('div');
+  moneyLabel = document.createElement('div');
   moneyLabel.textContent = '$0';
   moneyLabel.style.cssText = 'font-size: 18px; font-weight: bold; margin-bottom: 5px;';
   

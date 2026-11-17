@@ -7,6 +7,7 @@ import { PALETTE } from './palette.js';
 import { buildCity, CITY } from './city.js';
 
 export function createWorld(scene) {
+  const sunPosition = new THREE.Vector3(180, 260, -120);
   scene.background = new THREE.Color(PALETTE.sky);
   scene.fog = new THREE.Fog(PALETTE.fog, 220, 620);
 
@@ -14,7 +15,7 @@ export function createWorld(scene) {
   scene.add(hemi);
 
   const sun = new THREE.DirectionalLight(PALETTE.sun, 1.7);
-  sun.position.set(180, 260, -120);
+  sun.position.copy(sunPosition);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.camera.near = 50;
@@ -33,5 +34,5 @@ export function createWorld(scene) {
   scene.add(fill);
 
   buildCity(scene);
-  return { sun, hemi, colliders: CITY.colliders, water: CITY.water, bounds: CITY.bounds };
+  return { sun, sunPosition, hemi, colliders: CITY.colliders, water: CITY.water, bounds: CITY.bounds };
 }

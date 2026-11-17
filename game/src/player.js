@@ -1,6 +1,7 @@
 // Player: on-foot movement with WASD and third-person camera
 import * as THREE from 'three';
 import { keys, mouse, requestPointerLock, releasePointerLock, updateMouseLocked } from './input.js';
+import { PALETTE } from './palette.js';
 
 const SPEED = 8;
 const SPRINT_MULTIPLIER = 1.8;
@@ -20,10 +21,10 @@ export function initPlayer(sceneArg, cameraArg, carsArg = []) {
   camera = cameraArg || new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
   nearbyCars = carsArg;
   playerBody = new THREE.Group();
-  playerMesh = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.8), new THREE.MeshStandardMaterial({ color: 0x3a4a5f }));
+  playerMesh = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.8), new THREE.MeshStandardMaterial({ color: PALETTE.player }));
   playerMesh.position.y = 0.9;
   playerBody.add(playerMesh);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.35, 8, 6), new THREE.MeshStandardMaterial({ color: 0xe8b48a }));
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.35, 8, 6), new THREE.MeshStandardMaterial({ color: PALETTE.playerSkin }));
   head.position.y = 1.1;
   playerMesh.add(head);
   scene.add(playerBody);

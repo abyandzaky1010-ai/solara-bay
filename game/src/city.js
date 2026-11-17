@@ -11,6 +11,7 @@ const ROAD_W = 16;
 const XS = [-100, 0, 100]; // vertical street centres (run along z)
 const ZS = [-100, 0, 100]; // horizontal street centres (run along x)
 const WATER_Z = 170; // the bay begins here (south edge)
+export const buildingPositions = [];
 
 export const CITY = {
   bound: B,
@@ -154,8 +155,13 @@ function buildings(scene, cx, cz, rng, mat, cols, rows) {
     const x = cx + off, z = cz + off2;
     const w = 34 + rng() * 10;
     const h = heights[(rng() * heights.length) | 0];
+    buildingPositions.push(new THREE.Vector3(x, h / 2 + 0.3, z));
     tower(scene, x, z, w, h, rng, mat);
   }
+}
+
+export function getBuildingPosition(index) {
+  return buildingPositions[index] ?? null;
 }
 
 function tower(scene, x, z, w, h, rng, mat) {

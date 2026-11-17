@@ -40,9 +40,16 @@ export function updateMouseLocked() {
   if (!document.pointerLockElement) return;
 }
 
+export function clearKeys() {
+  for (const key of Object.keys(keys)) {
+    keys[key] = false;
+  }
+}
+
 export function initInput() {
   document.addEventListener('keydown', updateKeys);
   document.addEventListener('keyup', updateKeys);
+  window.addEventListener('blur', clearKeys);
   document.addEventListener('mousemove', (event) => {
     if (document.pointerLockElement) mouse.x += event.movementX;
   });

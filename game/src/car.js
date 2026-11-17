@@ -30,7 +30,7 @@ function createParkedCar() {
   windshield.rotation.x = -0.3;
   carGroup.add(windshield);
   const wheelGeo = new THREE.CylinderGeometry(0.35, 0.35, 0.3, 12);
-  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
+  const wheelMat = new THREE.MeshStandardMaterial({ color: PALETTE.carTrim });
   const wheelPositions = [[-0.9, 0.35, 1.3], [0.9, 0.35, 1.3], [-0.9, 0.35, -1.3], [0.9, 0.35, -1.3]];
   wheelPositions.forEach(pos => {
     const wheel = new THREE.Mesh(wheelGeo, wheelMat);
@@ -79,5 +79,5 @@ export function exitCar() {
 export function checkInteraction() {
   if (!parkedCar) return null;
   const dist = player.getBody().position.distanceTo(parkedCar.position);
-  return dist < 3 ? 'car' : null;
+  return dist < 3 ? parkedCar : null;
 }
