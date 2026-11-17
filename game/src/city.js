@@ -198,3 +198,122 @@ function mulberry32(a) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+// --- Pedestrians -------------------------------------------------------
+// Ten simple walkers: a boxy torso with a small head box on top and two
+// swinging legs, laid out on the sidewalk lanes of the city blocks. They
+// pace a lane until they reach the end, turn around, and bob as they walk.
+export const pedestrians = [];
+
+const PED_COLORS = [
+  0xe4572e, 0x3d99d6, 0xf2c14e, 0x7a4fbf, 0x2fa36b,
+  0xd94f70, 0xf4f4f4, 0x4a4a55, 0x77d1c1, 0xc07a3a,
+];
+
+export function spawnPedestrians(scene) {
+  const rng = mulberry32(21);
+  const centers = [-150, -50, 50, 150];
+  const lanes = [];
+  // Every block contributes four sidewalk lanes: two along z, two along x.
+  for (const cx of centers) {
+    for (const cz of centers) {
+      for (const off of [-33, 33]) {
+        lanes.push({ axis: 'z', fixed: cx + off, lo: cz - 36, hi: cz + 36 });
+        lanes.push({ axis: 'x', fixed: cz + off, lo: cx - 36, hi: cx + 36 });
+      }
+    }
+  }
+
+  const count = 10;
+  const stride = Math.max(1, Math.floor(lanes.length / count));
+  for (let i = 0; i < count; i += 1) {
+    const lane = lanes[(i * stride + 5) % lanes.length];
+    const scale = 0.85 + rng() * 0.4;
+    const ped = makePedestrian(scene, PED_COLORS[i % PED_COLORS.length], scale);
+
+    ped.axis = lane.axis;
+    ped.fixed = lane.fixed;
+    ped.lo = lane.lo;
+    ped.hi = lane.hi;
+    ped.dir = rng() < 0.5 ? 1 : -1;
+    ped.speed = 1.2 + rng() * 1.0;
+    ped.phase = rng() * Math.PI * 2;
+    ped.baseY = 0.2; // top of the concrete apron
+
+    const along = lane.lo + rng() * (lane.hi - lane.lo);
+    if (lane.axis === 'z') ped.position.set(lane.fixed, ped.baseY, along);
+    else ped.position.set(along, ped.baseY, lane.fixed);
+    ped.rotation.y = ped.axis === 'z'
+      ? (ped.dir > 0 ? 0 : Math.PI)
+      : (ped.dir > 0 ? Math.PI / 2 : -Math.PI / 2);
+
+    scene.add(ped);
+    pedestrians.push(ped);
+  }
+  return pedestrians;
+}
+
+function makePedestrian(scene, color, scale) {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.85 });
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0xd9a06b, roughness: 0.7 });
+  const legMat = new THREE.MeshStandardMaterial({ color: 0x3a3f52, roughness: 0.9 });
+
+  // Torso box, then the small head box sitting on top of it.
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.8, 0.38), bodyMat);
+  torso.position.y = 1.06;
+  torso.castShadow = true;
+  g.add(torso);
+
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), skinMat);
+  head.position.y = 1.68;
+  head.castShadow = true;
+  g.add(head);
+
+  // Two hips that pivot so the legs can swing while walking.
+  const legs = [];
+  for (const sx of [-0.16, 0.16]) {
+    const hip = new THREE.Group();
+    hip.position.set(sx, 0.66, 0);
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.66, 0.24), legMat);
+    leg.position.y = -0.33;
+    leg.castShadow = true;
+    hip.add(leg);
+    hip.userData.offset = sx > 0 ? Math.PI : 0;
+    g.add(hip);
+    legs.push(hip);
+  }
+
+  g.legs = legs;
+  g.scale.setScalar(scale);
+  return g;
+}
+
+export function updatePedestrians(deltaTime) {
+  if (!pedestrians.length) return;
+  for (const ped of pedestrians) {
+    const step = ped.speed * deltaTime;
+    let along = ped.axis === 'z' ? ped.position.z : ped.position.x;
+    along += ped.dir * step;
+
+    // Turn around when the sidewalk lane runs out.
+    if (along > ped.hi) { along = ped.hi; ped.dir = -1; }
+    else if (along < ped.lo) { along = ped.lo; ped.dir = 1; }
+
+    if (ped.axis === 'z') ped.position.z = along;
+    else ped.position.x = along;
+
+    ped.rotation.y = ped.axis === 'z'
+      ? (ped.dir > 0 ? 0 : Math.PI)
+      : (ped.dir > 0 ? Math.PI / 2 : -Math.PI / 2);
+
+    // A light bob up and down plus a matching leg swing.
+    ped.phase += step * 6;
+    ped.position.y = ped.baseY + Math.abs(Math.sin(ped.phase)) * 0.06;
+    if (ped.legs) {
+      for (const leg of ped.legs) {
+        leg.rotation.x = Math.sin(ped.phase + leg.userData.offset) * 0.5;
+      }
+    }
+  }
+}
