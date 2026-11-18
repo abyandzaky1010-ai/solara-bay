@@ -1,3 +1,4 @@
+// Solara Bay: legacy Block Dodger starter file, kept as-is; the 3D game does not import it.
 // Every tuning number and colour in one place. The playfield is a fixed 1280x720 logical area;
 // the renderer scales it to the window, so no rule below depends on the screen size.
 

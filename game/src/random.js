@@ -1,3 +1,4 @@
+// Solara Bay: legacy Block Dodger starter file, kept as-is; the 3D game does not import it.
 // A small seeded random number generator (mulberry32): the same seed gives the same game,
 // which is what makes the screenshot scenes repeatable.
 
