@@ -1,14 +1,13 @@
 // Solara Bay — hand-in program for the make.fun competition gta6-01.
-// Copies the game and its screenshots beside this file into the output directory
-// and writes the build dossier that the contest reads.
-
-import { cp, mkdir, writeFile } from 'node:fs/promises';
+// Copies game/ and screenshots/ into the output dir and writes dossier.json there.
+import { cp, mkdir, readdir, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const REPO = dirname(fileURLToPath(import.meta.url));
-const OUT = resolve(process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
+const HERE = dirname(fileURLToPath(import.meta.url));
+const OUT = resolve(process.env.MAKEFUN_OUTPUT_DIR || '/output');
 
 const CAPS = {
   text_max_bytes: 163840,
@@ -18,33 +17,26 @@ const CAPS = {
   game_path_max_bytes: 1000,
 };
 
-async function place(src, dest) {
-  try {
-    await cp(join(REPO, src), join(OUT, dest), { recursive: true });
-    return true;
-  } catch (err) {
-    if (err && err.code === 'ENOENT') return false;
-    throw err;
+async function copyInto(name) {
+  const src = join(HERE, name);
+  if (!existsSync(src)) {
+    throw new Error(`missing source directory: ${name}/`);
   }
+  await cp(src, join(OUT, name), { recursive: true, force: true });
+  const entries = await readdir(src, { recursive: true });
+  console.log(`copied ${name}/ (${entries.length} entries)`);
 }
 
-async function handIn() {
+async function main() {
   await mkdir(OUT, { recursive: true });
-  const hasGame = await place('game', 'game');
-  if (!hasGame) throw new Error('game/ directory is missing');
-  await place('screenshots', 'screenshots');
-
+  await copyInto('game');
+  await copyInto('screenshots');
   const dossier = await buildDossier(OUT, CAPS);
   await writeFile(join(OUT, 'dossier.json'), JSON.stringify(dossier, null, 2) + '\n', 'utf8');
-  return dossier;
+  console.log(`dossier.json written to ${OUT}`);
 }
 
-handIn()
-  .then((dossier) => {
-    console.log(`dossier ready at ${join(OUT, 'dossier.json')}`);
-    if (dossier && Array.isArray(dossier.files)) console.log(`${dossier.files.length} files listed`);
-  })
-  .catch((err) => {
-    console.error(`build failed: ${err instanceof Error ? err.message : String(err)}`);
-    process.exitCode = 1;
-  });
+main().catch((err) => {
+  console.error(`build failed: ${err && err.message ? err.message : err}`);
+  process.exitCode = 1;
+});

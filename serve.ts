@@ -1,13 +1,10 @@
-// Solara Bay — local static file server for the game/ folder on port 8080.
-// Serves the game to a browser during development; it is not part of the hand-in.
-
+// Solara Bay — static file server for game/ on http://localhost:8080 (dev only).
 import { createServer } from 'node:http';
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), 'game');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), 'game');
 const PORT = 8080;
 
 const MIME = {
@@ -16,49 +13,47 @@ const MIME = {
   '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.ts': 'text/plain; charset=utf-8',
+  '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
-  '.svg': 'image/svg+xml',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
-function safePath(urlPath) {
-  let rel;
-  try {
-    rel = decodeURIComponent(urlPath.split('?')[0].split('#')[0]);
-  } catch {
-    return null;
-  }
-  if (rel.includes('\0')) return null;
-  if (rel.endsWith('/')) rel += 'index.html';
-  const full = normalize(join(ROOT, rel));
-  if (full !== ROOT && !full.startsWith(ROOT + sep)) return null;
-  return full;
+function send(res, code, body, headers = {}) {
+  res.writeHead(code, { 'Cache-Control': 'no-store', ...headers });
+  res.end(body);
+}
+
+function isInsideRoot(path) {
+  const root = ROOT.endsWith(sep) ? ROOT : ROOT + sep;
+  return path === ROOT || path.startsWith(root);
 }
 
 const server = createServer(async (req, res) => {
-  const file = safePath(req.url || '/');
-  if (!file) {
-    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('forbidden\n');
-    return;
-  }
+  let pathname;
   try {
-    const info = await stat(file);
-    if (!info.isFile()) throw new Error('not a file');
-    res.writeHead(200, {
-      'Content-Type': MIME[extname(file).toLowerCase()] || 'application/octet-stream',
-      'Content-Length': info.size,
-      'Cache-Control': 'no-store',
-    });
-    createReadStream(file).pipe(res);
+    pathname = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname);
   } catch {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end('not found\n');
+    return send(res, 400, 'bad request');
+  }
+  if (pathname.endsWith('/')) pathname += 'index.html';
+  const filePath = resolve(ROOT, '.' + normalize('/' + pathname));
+  if (!isInsideRoot(filePath)) return send(res, 403, 'forbidden');
+  try {
+    const info = await stat(filePath);
+    if (!info.isFile()) return send(res, 404, 'not found');
+    const body = await readFile(filePath);
+    const type = MIME[extname(filePath).toLowerCase()] || 'application/octet-stream';
+    send(res, 200, body, { 'Content-Type': type, 'Content-Length': body.length });
+  } catch {
+    send(res, 404, 'not found');
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Solara Bay served at http://localhost:${PORT}`);
+server.listen(PORT, '127.0.0.1', () => {
+  console.log(`Solara Bay dev server: http://localhost:${PORT}/`);
 });

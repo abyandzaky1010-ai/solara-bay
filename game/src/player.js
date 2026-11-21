@@ -1,91 +1,104 @@
-// Solara Bay — the player: a small low-poly body, on-foot movement,
-// the weapon in her hand and what happens when she gets hit. Third person only.
-
+// The protagonist: a low-poly walker you can see over the shoulder, plus on-foot control
+// and the single carried weapon. Geometry lives here; game rules live on G.
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { C, material } from './palette.js';
 import { resolveMove } from './world.js';
 
-// How far the arm swings at full sprint, in radians, and how fast the cycle runs.
-const ARM_SWING = 0.85;
-const LEG_SWING = 0.75;
-const STRIDE_RATE = 2.3;
-const EYE_HEIGHT = 1.55;
-const BODY_RADIUS = 0.5;
+const BODY_R = 0.5;          // collision radius on foot
+const LIMB_SWING = 0.85;     // radians a leg reaches at full sprint
+const FLASH_TIME = 0.07;     // muzzle flash lifetime, seconds
+const EYE_Y = CONFIG.player.camHeight;
 
-// Limbs are pivoted groups so the swing rotates around the shoulder or the hip,
-// not around the middle of the mesh.
-function limb(width, length, depth, paint, jointY) {
-  const group = new THREE.Group();
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, length, depth), paint);
-  mesh.position.y = -length / 2;
-  mesh.castShadow = true;
-  group.add(mesh);
-  group.position.y = jointY;
-  return group;
+// Scratch vectors kept out of the per-frame allocation path.
+const EYE = new THREE.Vector3();
+const AIM = new THREE.Vector3();
+const SPOT = new THREE.Vector3();
+const HEAD = new THREE.Vector3();
+
+/** A plain box with a flat colour; the whole figure is built from these. */
+function block(w, h, d, hex, x = 0, y = 0, z = 0) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material(hex));
+  m.position.set(x, y, z);
+  m.castShadow = true;
+  m.receiveShadow = false;
+  return m;
 }
 
-function buildCharacterMesh() {
+/**
+ * Assemble the avatar. Hierarchy: root (feet) -> torso (hip pivot) -> head/arms,
+ * plus two independent legs so they can swing against each other. The root group
+ * stays at y=0 so the model always stands on the ground plane.
+ */
+function buildAvatar() {
   const root = new THREE.Group();
-  const skin = material(C.skin[0]);
-  const shirt = material(C.shirt[0]);
-  const pants = material(C.pants[0]);
+  root.name = 'player';
 
-  // Torso: the coral shirt.
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.72, 0.34), shirt);
-  torso.position.y = 1.16;
-  torso.castShadow = true;
+  const shirtHex = C.shirt[0];
+  const pantsHex = C.pants[0];
+  const skinHex = C.skin[0];
+
+  const torso = new THREE.Group();
+  torso.position.y = 0.86;
   root.add(torso);
 
-  // Hips.
-  const hips = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.26, 0.32), pants);
-  hips.position.y = 0.72;
-  hips.castShadow = true;
-  root.add(hips);
+  // Coral shirt box: the widest read at screenshot distance.
+  torso.add(block(0.62, 0.72, 0.36, shirtHex, 0, 0.3, 0));
 
-  // Head + a dark sunglasses band across the eyes.
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.32), skin);
-  head.position.y = 1.74;
-  head.castShadow = true;
-  root.add(head);
-  const shades = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.1, 0.1), material(0x1d2226));
-  shades.position.set(0, 1.77, 0.17);
-  root.add(shades);
+  // Hips and belt so the two half-tones meet cleanly.
+  torso.add(block(0.58, 0.14, 0.34, pantsHex, 0, -0.06, 0));
 
-  // Short dark hair, worn as a cap of its own.
-  const hair = new THREE.Mesh(new THREE.BoxGeometry(0.37, 0.12, 0.35), material(0x30241c));
-  hair.position.y = 1.94;
-  hair.castShadow = true;
-  root.add(hair);
+  const head = block(0.34, 0.34, 0.32, skinHex, 0, 0.86, 0);
+  torso.add(head);
 
-  const armL = limb(0.17, 0.62, 0.17, skin, 1.46);
-  armL.position.x = -0.4;
-  const armR = limb(0.17, 0.62, 0.17, skin, 1.46);
-  armR.position.x = 0.4;
-  const legL = limb(0.19, 0.72, 0.2, pants, 0.7);
-  legL.position.x = -0.15;
-  const legR = limb(0.19, 0.72, 0.2, pants, 0.7);
-  legR.position.x = 0.15;
-  root.add(armL, armR, legL, legR);
+  // Cap: crown plus a forward brim so we can tell which way he faces.
+  const capHex = 0x27313d;
+  torso.add(block(0.36, 0.12, 0.34, capHex, 0, 1.06, 0));
+  torso.add(block(0.34, 0.06, 0.16, capHex, 0, 1.01, -0.24));
+  // Sunglasses band across the face: a thin dark strip reads as shade, not eyes.
+  torso.add(block(0.34, 0.07, 0.06, 0x14181e, 0, 0.9, -0.16));
 
-  // Pistol barrel, held in the right hand, pointing along +Z when aimed.
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.34), material(0x3b4148));
-  gun.position.set(0.4, 1.2, 0.26);
-  root.add(gun);
+  const legs = [];
+  for (const side of [-1, 1]) {
+    const hip = new THREE.Group();
+    hip.position.set(side * 0.16, -0.13, 0);
+    hip.add(block(0.22, 0.74, 0.24, pantsHex, 0, -0.37, 0));
+    hip.add(block(0.24, 0.12, 0.34, 0x2b2b2b, 0, -0.76, -0.05));
+    torso.add(hip);
+    legs.push(hip);
+  }
 
-  return { root, armL, armR, legL, legR, gun };
+  const arms = [];
+  for (const side of [-1, 1]) {
+    const shoulder = new THREE.Group();
+    shoulder.position.set(side * 0.39, 0.6, 0);
+    shoulder.add(block(0.2, 0.52, 0.2, shirtHex, 0, -0.26, 0));
+    shoulder.add(block(0.18, 0.16, 0.18, skinHex, 0, -0.6, 0));
+    torso.add(shoulder);
+    arms.push(shoulder);
+  }
+
+  // The pistol: a small dark wedge pointing out of the forward (-z) side.
+  const gun = new THREE.Group();
+  gun.position.set(-0.4, 0.36, -0.22);
+  gun.visible = false;
+  gun.add(block(0.09, 0.09, 0.42, 0x2a2f38, 0, 0, -0.16));
+  gun.add(block(0.08, 0.2, 0.1, 0x1d2229, 0, -0.1, 0.02));
+  torso.add(gun);
+
+  return { root, legs, arms, gun };
 }
 
 export function createPlayer(W, city) {
-  const parts = buildCharacterMesh();
-  const start = (city && city.spawns && city.spawns.playerStart) || { x: -40, z: -8 };
-  parts.root.position.set(start.x, 0, start.z);
-  W.scene.add(parts.root);
+  const avatar = buildAvatar();
+  (W.scene || W).add(avatar.root);
+  const start = (city && city.spawns && city.spawns.playerStart) || { x: 0, z: 0 };
 
   const P = {
-    group: parts.root,
-    parts,
-    pos: { x: start.x, y: 0, z: start.z },
+    kind: 'player',
+    group: avatar.root,
+    avatar,
+    pos: { x: start.x, z: start.z },
     yaw: 0,
     hp: CONFIG.player.hp,
     armor: 0,
@@ -96,228 +109,316 @@ export function createPlayer(W, city) {
     cooldown: 0,
     aim: false,
     walkT: 0,
-    hurtT: 0,
+    speed: 0,
+    moving: false,
+    spawn: { x: start.x, z: start.z },
+    city,
+    W,
   };
+
+  avatar.root.position.set(P.pos.x, 0, P.pos.z);
   return P;
 }
 
-// Camera-relative WASD. The body always faces the way the camera looks, so the
-// shoulder view and the aim agree.
-export function updatePlayerFoot(P, G, I, dt) {
-  if (P.dead) return;
-  const walk = CONFIG.player.walk;
-  const sprint = CONFIG.player.sprint;
-  const view = G && G.W ? G.W.view : null;
-  const camYaw = view ? view.yaw : 0;
+/** Point the root, flick the limbs. Shared by the on-foot update. */
+export function posePlayer(P) {
+  const g = P.group;
+  g.rotation.y = P.yaw;
+  g.position.x = P.pos.x;
+  g.position.z = P.pos.z;
 
-  // Forward in world space is the direction the camera looks along -Z.
+  const av = P.avatar;
+  if (!av) return;
+  av.gun.visible = P.aim && !P.dead;
+
+  if (P.dead) {
+    // Lying down: tip the whole figure onto its back.
+    g.rotation.x = -Math.PI / 2;
+    g.position.y = 0.3;
+    return;
+  }
+  g.rotation.x = 0;
+  g.position.y = 0;
+
+  const amp = P.moving ? LIMB_SWING * Math.min(1, 0.35 + P.speed / CONFIG.player.sprint) : 0;
+  const swing = Math.sin(P.walkT);
+
+  av.legs[0].rotation.x = swing * amp;
+  av.legs[1].rotation.x = -swing * amp;
+  // Arms stay raised on the weapon: the character is always in an aiming stance.
+  av.arms[0].rotation.x = -1.35;
+  av.arms[1].rotation.x = -1.15;
+}
+
+/**
+ * Camera-relative WASD with sprint, feet planted through resolveMove, facing the
+ * camera yaw. The camera looks along (-sin yaw, -cos yaw), so "forward" is that
+ * vector and "right" is its perpendicular.
+ */
+export function updatePlayerFoot(P, G, I, dt) {
+  if (!P || P.dead) {
+    P.cooldown = Math.max(0, P.cooldown - dt);
+    return;
+  }
+  const W = G.W || P.W;
+  const world = CONFIG.player;
+
+  const ax = I && I.axis ? I.axis() : { x: 0, y: 0 };
+  const camYaw = W && isFinite(W.yaw) ? W.yaw : P.yaw;
+
+  // Forward and right on the ground plane for the current camera.
   const fx = -Math.sin(camYaw);
   const fz = -Math.cos(camYaw);
   const rx = -fz;
   const rz = fx;
 
-  let moveX = 0;
-  let moveZ = 0;
-  if (I) {
-    if (I.down('KeyW')) { moveX += fx; moveZ += fz; }
-    if (I.down('KeyS')) { moveX -= fx; moveZ -= fz; }
-    if (I.down('KeyD')) { moveX += rx; moveZ += rz; }
-    if (I.down('KeyA')) { moveX -= rx; moveZ -= rz; }
-  }
-  const pressing = moveX !== 0 || moveZ !== 0;
-  const dash = !!I && (I.down('ShiftLeft') || I.down('ShiftRight'));
-  const speed = dash ? sprint : walk;
+  let mx = fx * ax.y + rx * ax.x;
+  let mz = fz * ax.y + rz * ax.x;
+  const mag = Math.hypot(mx, mz);
+  P.moving = mag > 0.01;
 
-  if (pressing) {
-    const len = Math.hypot(moveX, moveZ) || 1;
-    moveX /= len;
-    moveZ /= len;
-    const step = speed * dt;
-    const moved = resolveMove(G.W, P.pos.x, P.pos.z, BODY_RADIUS, moveX * step, moveZ * step);
+  const sprint = !!(I && I.sprinting && I.sprinting());
+  const top = sprint ? world.sprint : world.walk;
+  P.speed = P.moving ? top : 0;
+
+  if (P.moving) {
+    mx /= mag;
+    mz /= mag;
+    const step = top * dt;
+    const moved = resolveMove(W, P.pos.x, P.pos.z, BODY_R, mx * step, mz * step);
     P.pos.x = moved.x;
     P.pos.z = moved.z;
-    P.walkT += dt * STRIDE_RATE * (speed / walk);
+    // Walk cycle advances with distance, so speed changes never warp the legs.
+    P.walkT += (top / 2.05) * dt * Math.PI;
   } else {
-    P.walkT += dt * 1.2;
+    P.walkT += dt * 0.4;
   }
 
-  // Face the camera, unless the aim is already pointing somewhere else this frame.
+  // Aim is always on: the body turns to the camera the moment you want to shoot.
+  P.aim = true;
   P.yaw = camYaw;
-  P.aim = !!I && I.locked;
 
-  const swing = pressing ? Math.sin(P.walkT) : Math.sin(P.walkT) * 0.12;
-  const amp = pressing ? (dash ? 1 : 0.72) : 0.12;
-  P.parts.legL.rotation.x = swing * LEG_SWING * amp;
-  P.parts.legR.rotation.x = -swing * LEG_SWING * amp;
-  P.parts.armL.rotation.x = -swing * ARM_SWING * amp;
-  // The gun arm stays half-raised forward while aiming, or swings when running.
-  P.parts.armR.rotation.x = P.aim ? -0.9 + swing * 0.1 : swing * ARM_SWING * amp;
-  P.parts.gun.visible = P.aim;
+  const half = CONFIG.world.half - 2;
+  P.pos.x = Math.max(-half, Math.min(half, P.pos.x));
+  P.pos.z = Math.max(-half, Math.min(half, P.pos.z));
 
-  P.group.position.set(P.pos.x, 0, P.pos.z);
-  P.group.rotation.y = P.yaw;
-
-  if (P.cooldown > 0) P.cooldown = Math.max(0, P.cooldown - dt);
-  if (P.hurtT > 0) P.hurtT = Math.max(0, P.hurtT - dt);
-  P.pos.y = 0;
+  P.cooldown = Math.max(0, P.cooldown - dt);
+  posePlayer(P);
 }
 
-// Eye position and aim direction, shared by the raycast and the tracer.
-function aimRay(P, G) {
-  const pitch = G && G.W && G.W.view ? G.W.view.pitch : 0;
-  const eye = new THREE.Vector3(P.pos.x, EYE_HEIGHT, P.pos.z);
-  const dir = new THREE.Vector3(-Math.sin(P.yaw), -Math.sin(pitch), -Math.cos(P.yaw));
-  dir.normalize();
-  return { eye, dir };
-}
-
-// Ray against every target the game keeps. Traffic cars sit on the same list as
-// the player's, so shooting someone's sedan counts. Returns the nearest hit.
-function raycastTargets(P, G, eye, dir, reach, radius, skippable) {
-  let best = null;
-  const check = (body, kind, list) => {
-    if (!body) return;
-    if (skippable && skippable(body)) return;
-    if (body.dead || body.state === 'down') return;
-    const tx = body.x !== undefined ? body.x : body.pos && body.pos.x;
-    const tz = body.z !== undefined ? body.z : body.pos && body.pos.z;
-    if (tx === undefined || tz === undefined) return;
-    const dx = tx - eye.x;
-    const dz = tz - eye.z;
-    const along = dx * dir.x + dz * dir.z;
-    if (along <= 0 || along > reach) return;
-    const side = Math.abs(dx * dir.z - dz * dir.x);
-    if (side > radius) return;
-    if (!best || along < best.dist) best = { dist: along, kind, target: body, list };
-  };
-
-  const traffic = (G && G.traffic) || [];
-  for (const car of traffic) check(car, 'traffic', traffic);
-  const peds = (G && G.peds) || [];
-  for (const ped of peds) check(ped, 'ped', peds);
-  const police = G && G.PO;
-  const foot = (police && police.foot) || [];
-  for (const cop of foot) check(cop, 'cop', foot);
+/** An empty pedestrians array on G is fine; this only skips what is missing. */
+function firstHitBox(W, ox, oz, dx, dz, maxT) {
+  if (!W || !W.colliders) return maxT;
+  let best = maxT;
+  const list = W.colliders;
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i];
+    // Slab test against the ground-projected box.
+    let t0 = 0;
+    let t1 = best;
+    if (Math.abs(dx) < 1e-6) {
+      if (ox < b.minX || ox > b.maxX) continue;
+    } else {
+      let a = (b.minX - ox) / dx;
+      let c = (b.maxX - ox) / dx;
+      if (a > c) { const s = a; a = c; c = s; }
+      t0 = Math.max(t0, a);
+      t1 = Math.min(t1, c);
+    }
+    if (Math.abs(dz) < 1e-6) {
+      if (oz < b.minZ || oz > b.maxZ) continue;
+    } else {
+      let a = (b.minZ - oz) / dz;
+      let c = (b.maxZ - oz) / dz;
+      if (a > c) { const s = a; a = c; c = s; }
+      t0 = Math.max(t0, a);
+      t1 = Math.min(t1, c);
+    }
+    if (t0 <= t1 && t0 < best) best = t0;
+  }
   return best;
 }
 
+/**
+ * Fire the carried weapon along the aim ray. Enemy damage goes through the G
+ * callbacks so the wanted level, gore flags and death bookkeeping stay in one place.
+ */
 export function fireWeapon(P, G) {
-  const cfg = CONFIG.weapons[P.weapon] || CONFIG.weapons.pistol;
-  if (!G || P.dead || P.cooldown > 0) return { hit: false };
+  const spec = CONFIG.weapons[P.rifle ? 'rifle' : 'pistol'];
+  const result = { hit: false, point: { x: 0, y: 1.2, z: 0 }, kind: 'air', target: null };
 
-  // A rifle has to be fed; the pistol never runs dry.
-  if (!cfg.infinite) {
-    if (P.ammo <= 0) {
-      if (G.sound && G.sound.click) G.sound.click();
-      P.cooldown = 0.35;
-      return { hit: false };
+  if (!P || P.dead) return result;
+  if (P.cooldown > 0) return result;
+  if (P.rifle && P.ammo <= 0) {
+    if (G.sound && G.sound.dry) G.sound.dry();
+    P.rifle = false;
+    P.cooldown = 0.2;
+    return result;
+  }
+
+  P.cooldown = 1 / spec.rate;
+  if (P.rifle) P.ammo = Math.max(0, P.ammo - 1);
+
+  const W = G.W || P.W;
+  const camYaw = W && isFinite(W.yaw) ? W.yaw : P.yaw;
+  const pitch = W && isFinite(W.pitch) ? W.pitch : 0.1;
+
+  EYE.set(P.pos.x, EYE_Y, P.pos.z);
+  // Spread: two centred random offsets inside a cone of the configured radius.
+  const spread = spec.spread;
+  const jx = (Math.random() - 0.5) * spread * 2;
+  const jy = (Math.random() - 0.5) * spread * 2;
+  AIM.set(
+    -Math.sin(camYaw) + Math.cos(camYaw) * jx,
+    -Math.sin(pitch) + jy,
+    -Math.cos(camYaw) - Math.sin(camYaw) * jx,
+  ).normalize();
+
+  const range = 120;
+  let best = range;
+  let hitKind = 'air';
+  let hitTarget = null;
+
+  // Nearest person or vehicle along the ray, then clip by walls. People are aimed
+  // at chest height with a body-sized sphere; cars use their own footprint radius.
+  const scan = (list, kind, cy, r, skip) => {
+    for (let i = 0; i < list.length; i++) {
+      const o = list[i];
+      if (!o || (skip && skip(o))) continue;
+      const at = o.pos || o;
+      const t = raySphere(EYE, AIM, at.x, cy, at.z, o.pos ? r : o.radius || CONFIG.car.radius);
+      if (t != null && t < best) { best = t; hitKind = kind; hitTarget = o; }
     }
-    P.ammo -= 1;
-  }
-  P.cooldown = 1 / cfg.rate;
+  };
+  scan(G.peds || [], 'ped', 1.0, 0.7, (p) => p.state === 'down');
+  scan((G.PO && G.PO.foot) || [], 'cop', 1.0, 0.65, (c) => c.down);
+  scan((G.cars || []).concat(G.traffic || [], (G.PO && G.PO.cars) || []), 'car', 0.9, 0, (c) => c.wrecked);
 
-  const { eye, dir } = aimRay(P, G);
-  // Spread: a small random wobble on the aim, tighter for the pistol.
-  const jitter = cfg.spread;
-  dir.x += (Math.random() * 2 - 1) * jitter;
-  dir.y += (Math.random() * 2 - 1) * jitter;
-  dir.z += (Math.random() * 2 - 1) * jitter;
-  dir.normalize();
+  const wallT = firstHitBox(W, P.pos.x, P.pos.z, AIM.x, AIM.z, best);
+  if (wallT < best) { best = wallT; hitKind = 'wall'; hitTarget = null; }
 
-  const muzzle = new THREE.Vector3(
-    eye.x + dir.x * 0.6,
-    eye.y - 0.12 + dir.y * 0.6,
-    eye.z + dir.z * 0.6,
-  );
+  HEAD.set(P.pos.x, EYE_Y, P.pos.z).addScaledVector(AIM, best);
+  result.hit = hitKind !== 'air';
+  result.kind = hitKind;
+  result.target = hitTarget;
+  result.point = { x: HEAD.x, y: HEAD.y, z: HEAD.z };
 
-  if (G.sound && G.sound.shot) G.sound.shot();
-
-  const reach = P.weapon === 'rifle' ? 90 : 60;
-  const hit = raycastTargets(P, G, eye, dir, reach, 0.85, (body) => body.player);
-  const end = hit
-    ? new THREE.Vector3(eye.x + dir.x * hit.dist, eye.y + dir.y * hit.dist, eye.z + dir.z * hit.dist)
-    : new THREE.Vector3(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
-
-  if (G.effects) {
-    G.effects.spawnMuzzle(muzzle);
-    G.effects.spawnTracer(muzzle, end);
+  if (hitKind === 'ped' && G.damagePed) G.damagePed(hitTarget, spec.dmg);
+  else if (hitKind === 'cop' && G.damageCop) G.damageCop(hitTarget, spec.dmg);
+  else if (hitKind === 'car' && hitTarget) {
+    if (G.damageTrafficCar) G.damageTrafficCar(hitTarget, spec.dmg);
+    else if (G.damageTraffic) G.damageTraffic(hitTarget, spec.dmg);
   }
 
-  // Gunfire is loud: the neighbourhood pricks up its ears wherever you are.
+  // Shot heard across the block: police heads up, and the alarm origin moves here.
   G.alarm = 1;
   G.alarmX = P.pos.x;
   G.alarmZ = P.pos.z;
 
-  if (!hit) return { hit: false, point: end, kind: null, target: null };
-
-  if (hit.kind === 'ped') {
-    const ped = hit.target;
-    ped.hp = (ped.hp || CONFIG.peds.hp) - cfg.dmg;
-    const killed = ped.hp <= 0;
-    ped.state = killed ? 'down' : 'flee';
-    ped.fleeT = 4;
-    ped.hitBy = 'shot';
-    if (G.damagePed) G.damagePed(ped, cfg.dmg, killed);
-    if (killed && G.onPedKill) G.onPedKill(ped);
-  } else if (hit.kind === 'cop') {
-    if (G.damageCop) G.damageCop(hit.target, cfg.dmg);
-  } else if (hit.kind === 'traffic') {
-    if (G.damageTrafficCar) G.damageTrafficCar(hit.target, cfg.dmg);
+  const fx = G.effects || (W && W.fx);
+  if (fx) {
+    SPOT.set(P.pos.x - Math.sin(P.yaw) * 0.55, 1.32, P.pos.z - Math.cos(P.yaw) * 0.55);
+    if (fx.muzzle) fx.muzzle({ x: SPOT.x, y: SPOT.y, z: SPOT.z });
+    if (fx.spark) fx.spark({ x: HEAD.x, y: HEAD.y, z: HEAD.z });
+    if (fx.tracer) fx.tracer({ x: SPOT.x, y: SPOT.y, z: SPOT.z }, result.point);
+    if (fx.flashLight) fx.flashLight(SPOT, FLASH_TIME);
   }
+  if (G.sound && G.sound.shot) G.sound.shot(P.rifle);
 
-  return { hit: true, point: end, kind: hit.kind, target: hit.target };
+  return result;
 }
 
+/** Sweep segment vs an upright capsule-ish circle at height cy. */
+function raySphere(o, d, cx, cy, cz, r) {
+  const ox = o.x - cx;
+  const oy = o.y - cy;
+  const oz = o.z - cz;
+  const b = ox * d.x + oy * d.y + oz * d.z;
+  const c = ox * ox + oy * oy + oz * oz - r * r;
+  const disc = b * b - c;
+  if (disc < 0) return null;
+  const sq = Math.sqrt(disc);
+  let t = -b - sq;
+  if (t < 0) t = -b + sq;
+  return t >= 0 ? t : null;
+}
+
+/**
+ * Take damage. Armour soaks 60% until it runs dry, the remainder flows to health.
+ * Hitting zero hands control to G.wasted() once.
+ */
 export function damagePlayer(P, amt, G) {
-  if (P.dead || amt <= 0) return;
-  let rest = amt;
+  if (!P || P.dead || amt <= 0) return P ? P.hp : 0;
+
+  let left = amt;
   if (P.armor > 0) {
-    const soaked = Math.min(P.armor, amt * 0.6);
+    const soaked = Math.min(P.armor, left * 0.6);
     P.armor = Math.max(0, P.armor - soaked);
-    rest = amt - soaked;
+    left -= soaked;
   }
-  P.hp = Math.max(0, P.hp - rest);
-  P.hurtT = 0.2;
-  if (G && G.effects && G.effects.flashDamage) G.effects.flashDamage();
-  if (P.hp <= 0 && !P.dead) {
+  P.hp -= left;
+
+  const fx = G && (G.effects || (G.W && G.W.fx));
+  if (fx && fx.flashDamage) fx.flashDamage();
+
+  if (P.hp <= 0) {
+    P.hp = 0;
     P.dead = true;
+    P.aim = false;
+    posePlayer(P);
     if (G && G.wasted) G.wasted();
   }
+  return P.hp;
 }
 
+/** Put the body back at a known spot, healed, with the board cleared. */
 export function respawnPlayer(P, G, where) {
-  const spot = where || (G && G.city && G.city.places && G.city.places.hospital) || { x: -40, z: -8 };
+  const spot = where || P.spawn || { x: 0, z: 0 };
   P.pos.x = spot.x;
   P.pos.z = spot.z;
-  P.pos.y = 0;
   P.hp = CONFIG.player.hp;
+  P.armor = 0;
   P.dead = false;
   P.cooldown = 0;
   P.walkT = 0;
-  P.hurtT = 0;
-  if (P.armor < 0) P.armor = 0;
-  P.group.visible = true;
-  P.group.position.set(P.pos.x, 0, P.pos.z);
-  P.group.rotation.set(0, P.yaw, 0);
-  P.parts.armL.rotation.x = 0;
-  P.parts.armR.rotation.x = 0;
-  P.parts.legL.rotation.x = 0;
-  P.parts.legR.rotation.x = 0;
-  if (G && G.W && G.W.view) G.W.view.ready = false;
+  P.speed = 0;
+  P.moving = false;
+  P.aim = false;
+  if (G && G.W && isFinite(G.W.yaw)) P.yaw = G.W.yaw;
+  posePlayer(P);
+  return P;
 }
 
-// Pickups from the crate in Verde Park (or the shop) flow through here.
+/**
+ * Pickups: the rifle crate arms the rifle but keeps the pistol as the fallback
+ * weapon and leaves the ammo count exactly as the shop left it. Cash and armour
+ * route through the economy when it is around.
+ */
 export function givePickup(P, G, item) {
-  if (!item) return;
-  const kind = typeof item === 'string' ? item : item.kind || item.type;
+  if (!P || !item) return false;
+  const kind = typeof item === 'string' ? item : item.item || item.kind;
+
   if (kind === 'rifle') {
     P.rifle = true;
-    P.weapon = 'rifle';
-  } else if (kind === 'ammo') {
-    P.ammo += CONFIG.weapons.rifle.ammoPerBuy;
-  } else if (kind === 'armor') {
-    P.armor = Math.min(100, P.armor + 100);
-  } else if (kind === 'medkit' || kind === 'health') {
-    P.hp = Math.min(CONFIG.player.hp, P.hp + 60);
+    P.weapon = 'pistol';
+    if (G && G.hud) G.hud.toast('Rifle acquired — it now fires in place of the pistol');
+    if (G && G.sound && G.sound.chime) G.sound.chime();
+    return true;
   }
+  if (kind === 'armor') {
+    P.armor = Math.min(100, P.armor + 60);
+    if (G && G.sound && G.sound.chime) G.sound.chime();
+    return true;
+  }
+  if (kind === 'medkit') {
+    P.hp = Math.min(CONFIG.player.hp, P.hp + 50);
+    if (G && G.sound && G.sound.chime) G.sound.chime();
+    return true;
+  }
+  if (kind === 'cash' || kind === 'money') {
+    const amount = (item && item.amount) || 25;
+    if (G && G.E && G.addMoney) G.addMoney(amount);
+    return true;
+  }
+  return false;
 }

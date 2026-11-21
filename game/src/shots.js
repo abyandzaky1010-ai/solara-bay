@@ -1,141 +1,182 @@
-import { CONFIG } from './config.js';
-import { makeRng } from './random.js';
-import { updateCamera, renderFrame } from './world.js';
-import { makeCar } from './car.js';
-import { addStars } from './police.js';
-import { startMission } from './missions.js';
-import { spawnTracer } from './render.js';
-import { showHUD, showPanel } from './hud.js';
+import {makeRng} from './random.js';
+import {CONFIG} from './config.js';
+import {C} from './palette.js';
+import {makeCar,syncCarMesh} from './car.js';
+import {addStars} from './police.js';
+import {startMission} from './missions.js';
+import {makeFarePed} from './peds.js';
+import {showPanel,hidePanels} from './hud.js';
+import {spawnTracer,spawnMuzzle} from './render.js';
 
-const NAMES = ['chase', 'city', 'mission', 'start'];
+const rng=makeRng(1);
+const PI=Math.PI;
 
-function look(W, x, z, y, yaw, pitch, dist) {
-  W.view.yaw = yaw;
-  W.view.pitch = pitch;
-  W.view.ready = false;
-  updateCamera(W, null, { x, z, y, dist }, 0.5);
+function pose(G){
+  Object.assign(G,{freezePolice:true,freezeMissions:true,freezeFares:true,screen:'play',inCar:null});
+  hidePanels(G.H);
+  G.P.dead=false;
 }
 
-function spot(car, x, z, h) {
-  Object.assign(car, { x, z, heading: h, speed: 0, leg: null });
-  car.mesh.position.set(x, 0, z);
-  car.mesh.rotation.y = h;
+/** Clear the street: only what a scene adds stays on screen. */
+function hollow(G){
+  for(const t of G.traffic)t.mesh.visible=false;
+  for(const c of G.cars)c.mesh.visible=false;
+  for(const p of G.peds)p.parts.root.visible=false;
 }
 
-function add(G, kind, x, z, h, color, tag) {
-  const car = makeCar(kind, x, z, h, color);
-  if (tag) car.tag = tag;
-  G.W.scene.add(car.mesh);
-  G.cars.push(car);
-  return car;
+function seat(G,c){
+  Object.assign(c,{occupant:'player',player:true,speed:0,wrecked:false,hp:CONFIG.car.hp});
+  G.inCar=c;
+  G.P.pos.x=c.x;
+  G.P.pos.z=c.z;
+  G.P.yaw=c.heading;
+  G.P.group.visible=false;
+  syncCarMesh(c);
 }
 
-function sit(G, car) {
-  Object.assign(car, { occupant: 'player', player: true });
-  G.inCar = car;
-  Object.assign(G.P.pos, { x: car.x, z: car.z });
-  G.P.group.visible = false;
+function stand(G,x,z,yaw){
+  const P=G.P;
+  P.pos.x=x;
+  P.pos.z=z;
+  P.yaw=yaw;
+  P.aim=true;
+  P.dead=false;
+  P.group.visible=true;
+  P.group.position.set(x,0,z);
+  P.group.rotation.set(0,yaw,0);
 }
 
-function stand(G, x, z, yaw) {
-  G.inCar = null;
-  Object.assign(G.P.pos, { x, z, y: 0 });
-  Object.assign(G.P, { yaw, dead: false });
-  Object.assign(G.P.group, { visible: true });
-  G.P.group.position.set(x, 0, z);
-  G.P.group.rotation.set(0, yaw, 0);
+function car(G,x,z,h,color,taxi){
+  const c=makeCar(taxi?'taxi':'sedan',x,z,h,color,G.W);
+  G.traffic.push(c);
+  syncCarMesh(c);
+  return c;
 }
 
-function pose(list, rows) {
-  list.slice(0, rows.length).forEach((c, i) => { if (c && !c.wrecked) spot(c, rows[i].x, rows[i].z, rows[i].h); });
+function copAt(x,z,yaw,down){
+  const pos={x,z,set(){return this;}};
+  return {x,z,yaw,pos,mesh:null,state:down?'down':'run',cool:9,down:!!down,dead:!!down,downT:1,hp:down?0:60};
 }
 
-function crowd(G, rows) {
-  G.peds.slice(0, rows.length).forEach((p, i) => {
-    if (!p || p.gone) return;
-    const s = rows[i];
-    Object.assign(p.pos, { x: s.x, z: s.z });
-    Object.assign(p, { state: s.state || 'walk', hp: CONFIG.peds.hp, heading: s.h || 0, leg: null });
-    p.mesh.visible = true;
-    p.mesh.rotation.y = p.heading;
-    p.mesh.position.set(s.x, 0, s.z);
-  });
+/** Marked cruiser facing a target; its officer on foot is returned. */
+function cop(G,x,z,tx,tz,foot){
+  const c=makeCar('police',x,z,Math.atan2(x-tx,z-tz),C.copbody,G.W);
+  Object.assign(c,{occupant:'npc',sirenOn:true,flashT:0.05});
+  G.PO.cars.push(c);
+  syncCarMesh(c);
+  const o=copAt(x,z,c.heading,false);
+  if(foot)G.PO.foot.push(o);
+  return o;
 }
 
-function cruiser(G, x, z, h, speed) {
-  const car = add(G, 'police', x, z, h);
-  Object.assign(car, { occupant: 'npc', police: true, siren: true, speed: speed || 0 });
-  car.ai = { stuck: 0, rev: 0, ramT: 0, deploying: false, hold: true };
-  G.PO.cars.push(car);
+function person(G,x,z,yaw,waiting){
+  const p=makeFarePed(G.W,G.city,rng,x,z);
+  Object.assign(p,{fare:!!waiting,state:waiting?'wait':'walk',edge:{from:0,to:0},t:0});
+  p.pos.x=x;
+  p.pos.z=z;
+  p.parts.root.position.set(x,0,z);
+  p.parts.root.rotation.set(0,yaw,0);
+  p.parts.root.visible=true;
+  G.peds.push(p);
 }
 
-function officer(G, x, z, down) {
-  const body = makeCar('police', x, z, 0).mesh;
-  body.scale.set(0.45, 0.5, 0.28);
-  body.position.set(x, down ? 0.4 : 0, z);
-  body.rotation.set(down ? -Math.PI / 2 : 0, 0.3, 0);
-  G.W.scene.add(body);
+function chase(G){
+  pose(G);
+  hollow(G);
+  const c=G.m1Car;
+  Object.assign(c,{x:26,z:88,heading:0});
+  c.mesh.visible=true;
+  seat(G,c);
+  addStars(G.PO,3,G);
+  cop(G,24,100,26,70);
+  cop(G,-40,128,26,60);
+  car(G,76.8,44,0,C.sedan);
+  car(G,76.8,-4,0,C.taxi,true);
+  car(G,83.2,66,PI,0xd7d0c2);
+  for(let i=0;i<5;i++)person(G,8.4,52-i*6,PI,false);
+  G.W.yaw=0.06;
+  G.W.pitch=0.26;
+  G.H.setBanner('Three stars on Meridian. Lose them.',4000);
 }
 
-function stage(G, gen, name) {
-  const H = G.H;
-  const cam = CONFIG.player.camHeight;
-  if (name === 'chase') {
-    const coupe = add(G, 'sport', 12, 88, Math.PI, 0xd94f4f);
-    sit(G, coupe);
-    addStars(G.PO, 3, G);
-    G.PO.noSeeT = 0;
-    cruiser(G, 24, 100, Math.PI, 12);
-    cruiser(G, 18, 126, Math.PI, 8);
-    pose(G.traffic, [{ x: 6, z: 40, h: 0 }, { x: 6, z: -30, h: 0 }, { x: 86, z: 96, h: Math.PI }, { x: -6, z: 140, h: 0 }]);
-    crowd(G, [{ x: 16, z: 70, state: 'flee' }, { x: -4, z: 74 }]);
-    G.screen = 'play';
-    showHUD(H, true);
-    look(G.W, coupe.x, coupe.z, 1.3, Math.PI, 0.26, 8.5);
-  } else if (name === 'city') {
-    stand(G, 30, 6, -Math.PI / 2);
-    add(G, 'taxi', 36, 74, Math.PI);
-    pose(G.traffic, [{ x: 74, z: 6, h: -Math.PI / 2 }, { x: 18, z: 6, h: Math.PI / 2 }]);
-    crowd(G, [{ x: 34, z: -3, h: 3 }, { x: 26, z: 3 }, { x: 33, z: 13, h: 2 }, { x: 22, z: -4, h: 1 }]);
-    startMission(G.M, G, { force: true });
-    if (G.M.active) Object.assign(G.M.active, { stage: 'deliver' });
-    G.screen = 'play';
-    showHUD(H, true);
-    look(G.W, 30, 6, cam, -Math.PI / 2, 0.2, 5.5);
-  } else if (name === 'mission') {
-    const crate = G.city.pickup || { x: -18, z: -24 };
-    stand(G, crate.x, crate.z - 4, Math.PI);
-    Object.assign(G.P, { rifle: true, weapon: 'rifle', ammo: 60 });
-    addStars(G.PO, 2, G);
-    G.PO.noSeeT = 0;
-    officer(G, crate.x + 2, crate.z - 14, false);
-    officer(G, crate.x - 3.4, crate.z - 11, true);
-    spawnTracer({ x: crate.x + 2, y: 1.35, z: crate.z - 14 }, { x: crate.x, y: 1.15, z: crate.z - 4 });
-    cruiser(G, -20, -66, 0.4, 4);
-    crowd(G, [{ x: crate.x - 8, z: crate.z - 6, state: 'flee' }, { x: crate.x + 6, z: crate.z - 10 }]);
-    G.screen = 'play';
-    showHUD(H, true);
-    look(G.W, crate.x, crate.z - 4, cam, Math.PI, 0.18, 5.5);
-  } else {
-    add(G, 'sport', -30, -18, 0.6, 0xe88f6f);
-    stand(G, -44, -20, 0.4);
-    G.screen = 'title';
-    showHUD(H, false);
-    showPanel(H, 'title');
-    look(G.W, -30, -20, 7, 0.7, 0.4, 30);
+function city(G){
+  pose(G);
+  hollow(G);
+  stand(G,30,6,-PI/2);
+  car(G,30,76.8,-PI/2,C.sedan);
+  car(G,70,83.2,PI/2,C.taxi,true);
+  const cab=G.cars.find((x)=>x.kind==='taxi');
+  if(cab){
+    cab.mesh.visible=true;
+    cab.x=36;
+    cab.z=-6;
+    cab.heading=0.9;
+    syncCarMesh(cab);
   }
-  renderFrame(G.W);
+  for(let i=0;i<4;i++)person(G,26+i*2.4,6+(i%2?2.7:-2.7),i%2?PI:0,i>2);
+  G.m1Car.mesh.visible=true;
+  if(!G.M.active){
+    G.freezeMissions=false;
+    startMission(G.M,G);
+    G.freezeMissions=true;
+  }
+  G.M.stage=0;
+  G.M.marker={x:G.m1Car.x,z:G.m1Car.z};
+  G.M.target=G.M.marker;
+  G.W.yaw=PI/2-0.3;
+  G.W.pitch=0.2;
 }
 
-// Poses one of the four demo scenes instantly. Returns its name, or '' when it
-// threw (the title already says why); main.js flips __shotReady after two frames.
-export function applyShot(name, G) {
-  try {
-    if (NAMES.indexOf(name) < 0) throw new Error('unknown shot ' + name);
-    stage(G, makeRng(1), name);
-    return name;
-  } catch (err) {
-    document.title = 'SB-error-' + String((err && err.message) || err).slice(0, 100);
-    return '';
+function mission(G){
+  pose(G);
+  hollow(G);
+  const up=G.city.pickup;
+  Object.assign(G.P,{rifle:true,weapon:'rifle',ammo:60});
+  stand(G,up.x+3.5,up.z+1.5,PI*0.75);
+  addStars(G.PO,2,G);
+  const px=G.P.pos.x,pz=G.P.pos.z;
+  const o=cop(G,px-7,pz-7,px,pz,true);
+  G.PO.foot.push(copAt(px-5,pz-3.5,1.2,true));
+  spawnMuzzle({x:o.x,y:1.3,z:o.z});
+  spawnTracer({x:o.x,y:1.35,z:o.z},{x:px,y:1.15,z:pz});
+  for(let i=0;i<3;i++)person(G,up.x-6+i*4,up.z+7,i*0.5,false);
+  G.W.yaw=-PI*0.3;
+  G.W.pitch=0.3;
+  G.H.setBanner('Two stars in Verde Park. Rifle up.',4000);
+}
+
+function start(G){
+  pose(G);
+  hollow(G);
+  stand(G,-30,-28,0.6);
+  Object.assign(G.m1Car,{x:-22,z:-18,heading:0.7});
+  G.m1Car.mesh.visible=true;
+  syncCarMesh(G.m1Car);
+  car(G,30,76.8,-PI/2,C.taxi,true);
+  car(G,83.2,20,PI/2,C.sedan);
+  for(let i=0;i<4;i++)person(G,-34+i*4,-8,PI,false);
+  G.screen='title';
+  showPanel(G.H,'title');
+  G.orbit={x:-20,y:30,z:-10,yaw:-0.7,spin:0.1,dist:46};
+}
+
+const SCENES={chase,city,mission,start};
+
+/** Pose one scene; the title flips after two real rendered frames. */
+export function applyShot(name,G){
+  try{
+    if(!SCENES[name])throw new Error('unknown shot '+name);
+    SCENES[name](G);
+    G.shot=name;
+    let done=0;
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      if(done++)return;
+      window.__shotReady=true;
+      document.title='SB-'+name+'-ok';
+    }));
+    return true;
+  }catch(err){
+    document.title=String((err&&err.stack)||err).slice(0,320);
+    return false;
   }
 }

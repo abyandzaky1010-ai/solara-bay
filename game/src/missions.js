@@ -1,451 +1,425 @@
-// Solara Bay — the Vesper thread: three jobs, one gold beacon, and the story
-// lines that close each of them. One clear job: story, missions and markers.
-
+// One job: the three jobs. Story beats, stage machines, gold beacons and the
+// objective line the HUD reads. Mission state is plain data so a save can carry it.
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { C, material } from './palette.js';
+import { addStars } from './police.js';
 
-const MONEY = CONFIG.missions;
+// ---------- definitions ----------
 
-// Where the gold beacon lives when a job wants the Glass Orchid drop.
-const BUST_RANGE = 5; // the coupe has to be this close to the lockup door
-const STOP_SPEED = 1; // and this slow before Vesper counts it delivered
-const PICKUP_RANGE = 6; // a car is a long way round: the pier pad is small
-const PICKUP_SPEED = 1;
-const TIMER_HURRY = 15;
-
-/* --------------------------------------------------------------- definitions */
-
-/**
- * The three jobs, in order. `step` names are the states each job walks through:
- * m1 walk → steal → deliver, m2 arm → evade, m3 collect → deliver.
- */
+/** The story, in order. Each def carries its own stages, timers and payoff. */
 export const MISSIONS = [
   {
     id: 'm1',
     title: 'Wheels for Vesper',
-    reward: MONEY.m1,
-    prize: `$${MONEY.m1}`,
-    brief: 'The coral coupe went missing from the Orchid forecourt. Take it back and leave it at the lockup. Do not scratch it.',
+    brief: 'Vesper wants the Coral coupe back. Take it, bring it to the Glass Orchid.',
+    hint: 'Steal the coral coupe downtown, then drive it into the Glass Orchid lockup',
+    reward: CONFIG.missions.m1,
     story: 'It runs. Vesper smiles like a knife.',
-    steps: {
-      steal: 'steal the coral coupe',
-      deliver: 'drive it to the Glass Orchid and stop',
-    },
+    stages: ['steal', 'deliver'],
+    retry: 'Press R to re-arm the coupe',
   },
   {
     id: 'm2',
     title: 'Shake the Heat',
-    reward: MONEY.m2,
-    prize: `$${MONEY.m2}`,
-    brief: 'Show Vesper you can take the heat. Get two stars, then lose them inside ninety seconds. No crowds, no roadblocks waiting.',
+    brief: 'Show Vesper you can take the heat. Get two stars, then lose them within 90 seconds.',
+    hint: 'Draw two stars, then break sight for long enough to shed them',
+    reward: CONFIG.missions.m2,
     story: 'The sirens fade. Somewhere out there, Otis is smiling.',
-    steps: {
-      arm: 'get two stars — make some noise',
-      evade: 'shake them off — no cop in sight',
-    },
+    stages: ['armed', 'evade'],
+    seconds: CONFIG.missions.m2EvadeSec,
+    retry: 'Press R to try the run again',
   },
   {
     id: 'm3',
     title: 'Harbor Handoff',
-    reward: MONEY.m3,
-    prize: `$${MONEY.m3}`,
-    brief: 'Otis left a package on the west pier. Collect it, get it to the Orchid in two minutes, and expect company the whole way.',
+    brief: 'Pick up Otis\u2019s last package at the pier and deliver it to the Glass Orchid in 120 s. Expect heat.',
+    hint: 'Collect the package on the west pier, then reach the Glass Orchid',
+    reward: CONFIG.missions.m3,
     story: 'Solara Bay knows your name now. Free ride: fares pay, the shop sells, the bay stays warm.',
-    steps: {
-      collect: 'pick up the package at the west pier',
-      deliver: 'get the package to the Glass Orchid and stop',
-    },
+    stages: ['pickup', 'deliver'],
+    seconds: CONFIG.missions.m3DeliverySec,
+    retry: 'Press R to pick the job up again',
   },
 ];
 
-/* -------------------------------------------------------------------- marker */
+/** Two lines of flavour for a fresh save, shown on the title card. */
+export const INTRO = [
+  'Vesper runs the Glass Orchid garage. She pays on time and remembers everything.',
+  'Otis left one package on the west pier. The bay wants it back.',
+];
 
-/** A gold cylinder with a pulsing ring at its foot: the mission beacon. */
-function buildBeacon() {
-  const root = new THREE.Group();
-  const skin = new THREE.MeshBasicMaterial({
-    color: C.beacon,
-    transparent: true,
-    opacity: 0.3,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-  const column = new THREE.Mesh(new THREE.CylinderGeometry(2.1, 2.1, 5.5, 20, 1, true), skin);
-  column.position.y = 2.9;
-  const ring = new THREE.Mesh(new THREE.RingGeometry(2.3, 3.05, 28), skin.clone());
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.14;
-  const coreBase = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.08, 12), material(C.beacon));
-  coreBase.position.y = 0.12;
-  root.add(column, ring, coreBase);
-  root.visible = false;
-  root.userData = { column, ring, skin, coreBase };
-  return root;
-}
+const PIER_X = -178;
+const PIER_Z = -40;
+const PICKUP_RADIUS = 4;
+const STOP_SPEED = 1;
+const BEACON_H = 9;
+const BEACON_R = 1.5;
 
-/* ---------------------------------------------------------------- utilities */
+// ---------- state ----------
 
-function distTo(ax, az, bx, bz) {
-  return Math.hypot(ax - bx, az - bz);
-}
-
-/** The nearest point out of the way to put a final drop: the Orchid when it exists. */
-function orchid(city) {
-  const m = city && city.markers && city.markers.glassOrchid;
-  if (m) return { x: m.x, z: m.z };
-  return { x: 48, z: -11 };
-}
-
-/** The west pier: promenade edge, south of the harbour mouth. */
-function westPier(city) {
-  const m = city && city.markers;
-  if (m && m.pier) return { x: m.pier.x, z: m.pier.z };
-  const sea = CONFIG.world.sea;
-  return { x: sea + 9, z: 36 };
-}
-
-/** The coupe m1 wants: tagged by the city spawn, resolved lazily. */
-function coupe(M, G) {
-  if (M.car && !M.car.wrecked) return M.car;
-  const tagged = ((G && G.cars) || []).find((c) => c && c.tag === 'm1car');
-  M.car = tagged || null;
-  return M.car;
-}
-
-function playerSpot(G) {
-  const car = G && G.inCar;
-  if (car && !car.wrecked) return { x: car.x, z: car.z, car, onFoot: false };
-  const p = (G && G.P && G.P.pos) || { x: 0, z: 0 };
-  return { x: p.x, z: p.z, car: null, onFoot: true };
-}
-
-function beaconAt(M, G, x, z) {
-  if (!M.beacon && G && G.W) {
-    M.beacon = buildBeacon();
-    G.W.scene.add(M.beacon);
-  }
-  if (!M.beacon) return;
-  M.beacon.visible = true;
-  M.beacon.position.set(x, 0, z);
-  M.marker = { x, z };
-}
-
-function beaconOff(M) {
-  if (M.beacon) M.beacon.visible = false;
-  M.marker = null;
-}
-
-/** Slow shimmer: the column breathes and the ring pushes outward once a second. */
-function pulseBeacon(M, time) {
-  if (!M.beacon || !M.beacon.visible) return;
-  const ud = M.beacon.userData;
-  const beat = (time * 0.8) % 1;
-  ud.column.material.opacity = 0.22 + Math.sin(time * 3.2) * 0.09;
-  ud.ring.material.opacity = 0.5 * (1 - beat);
-  const grow = 1 + beat * 0.5;
-  ud.ring.scale.set(grow, grow, grow);
-  M.beacon.position.y = Math.sin(time * 2) * 0.06;
-}
-
-/* --------------------------------------------------------------------- flow */
-
-/** Fresh state for a new game: nothing running, everything still owed. */
+/** A clean mission book. `index` is which def is next, `active` the running one. */
 export function initMissions() {
   return {
     index: 0,
     active: null,
     done: 0,
-    marker: null,
-    beacon: null,
     timer: 0,
-    car: null,
-    step: null,
+    stage: 0,
+    marker: null,
+    target: null,
+    beacon: null,
+    fail: null,
+    timerArmed: false,
+    introShown: false,
   };
 }
 
+function defOf(M) {
+  if (!M) return null;
+  return MISSIONS[M.index] || null;
+}
+
 /**
- * Begin the job at M.index. Normally the player has to be standing on Vesper's
- * mark outside the Glass Orchid; `opts.force` skips that (retries, panels, shots).
+ * Stage as a number. Internal runs count 0,1; demo scenes and saves may carry the
+ * stage name ('steal', 'deliver', 'armed', 'evade', 'pickup') instead.
  */
-export function startMission(M, G, opts) {
-  if (!M || !G) return false;
-  const force = !!(opts && opts.force);
-  if (M.index >= MISSIONS.length) {
-    if (force && G.toast) G.toast('No jobs left. The bay is yours.');
-    return false;
-  }
+function stageOf(M, def) {
+  if (!M) return 0;
+  const s = M.stage;
+  if (typeof s === 'number') return s;
+  const rows = (def && def.stages) || [];
+  const i = rows.indexOf(s);
+  return i >= 0 ? i : 0;
+}
 
-  // Standing at the giver: the player has to reach the Orchid unless forced.
-  if (!force) {
-    const give = orchid(G.city);
-    const here = playerSpot(G);
-    if (distTo(here.x, here.z, give.x, give.z) > 9) return false;
-  }
-
-  const def = MISSIONS[M.index];
-  M.active = {
-    index: M.index,
-    def,
-    id: def.id,
-    startedAt: (G.time || 0),
-    stage: def.id === 'm1' ? 'steal' : def.id === 'm2' ? 'arm' : 'collect',
-    armed: false,
-    car: null,
-    target: null,
-    heat: 0,
+/** Where the job is handed out, plus the two fixed goals. */
+function landmarks(G) {
+  const m = (G && G.city && G.city.markers) || {};
+  return {
+    giver: m.glassOrchid || { x: 40, z: -40 },
+    orchid: m.glassOrchid || { x: 40, z: -40 },
+    pier: { x: PIER_X, z: PIER_Z },
   };
-  M.timer = 0;
-  M.step = M.active.stage;
-  M.car = null;
+}
 
-  if (def.id === 'm1') {
-    M.active.car = coupe(M, G);
-    if (!M.active.car) {
-      M.active = null;
-      if (G.toast) G.toast('The coupe is not here. Try again later.');
+function playerCar(G) {
+  return (G && G.inCar) || null;
+}
+
+/** The coupe the first job is about: main flags it, otherwise find it by label. */
+function coupeOf(G) {
+  if (!G) return null;
+  if (G.m1Car) return G.m1Car;
+  const cars = G.cars || [];
+  for (let i = 0; i < cars.length; i++) {
+    if (cars[i] && (cars[i].missionCar || cars[i].label === 'm1car')) return cars[i];
+  }
+  return null;
+}
+
+function dist2(ax, az, bx, bz) {
+  const dx = ax - bx;
+  const dz = az - bz;
+  return dx * dx + dz * dz;
+}
+
+// ---------- beacons ----------
+
+/** A gold column with a ring around its foot, built once and then moved. */
+function ensureBeacon(M, G) {
+  if (M.beacon || !G || !G.W || !G.W.scene) return M.beacon;
+  const g = new THREE.Group();
+  g.name = 'mission-beacon';
+  const column = new THREE.Mesh(
+    new THREE.CylinderGeometry(BEACON_R, BEACON_R, BEACON_H, 14, 1, true),
+    new THREE.MeshBasicMaterial({ color: C.marker, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  column.position.y = BEACON_H / 2;
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(3.2, 0.16, 8, 26),
+    new THREE.MeshBasicMaterial({ color: C.marker, transparent: true, opacity: 0.85 }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.12;
+  const core = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.55, 0.55, BEACON_H * 1.05, 10),
+    material(C.beacon, { flat: true }),
+  );
+  core.position.y = BEACON_H * 0.52;
+  g.add(column, ring, core);
+  g.visible = false;
+  g.userData = { column, ring, core };
+  G.W.scene.add(g);
+  M.beacon = g;
+  return g;
+}
+
+/** Put the beacon on a spot (or hide it), and tell the HUD / minimap where to point. */
+export function placeMarker(M, G, x, z) {
+  const b = ensureBeacon(M, G);
+  if (!b || x == null) {
+    if (b) b.visible = false;
+    if (M) { M.marker = null; M.target = null; }
+    return null;
+  }
+  b.visible = true;
+  b.position.set(x, 0, z);
+  M.marker = { x, z };
+  M.target = { x, z };
+  return b;
+}
+
+function pulseBeacon(M, t) {
+  const b = M.beacon;
+  if (!b || !b.visible) return;
+  const wave = 0.5 + 0.5 * Math.sin(t * 3.4);
+  const u = b.userData;
+  u.column.material.opacity = 0.16 + wave * 0.22;
+  u.ring.scale.setScalar(1 + wave * 0.16);
+  u.ring.rotation.z = t * 0.9;
+  u.core.scale.y = 0.9 + wave * 0.2;
+}
+
+// ---------- staging ----------
+
+export function startMission(M, G) {
+  if (!M || !G) return false;
+  if (M.active || M.fail) return false;
+  const def = defOf(M);
+  if (!def) return false;
+  const marks = landmarks(G);
+
+  // The giver: press at the garage, or accept from the panel anywhere.
+  const P = G.P;
+  if (P && !G.inCar && dist2(P.pos.x, P.pos.z, marks.giver.x, marks.giver.z) > 12 * 12) {
+    if (!M.forceStart) {
+      if (G.hud) G.hud.toast('Vesper is at the Glass Orchid garage');
       return false;
     }
-    beaconAt(M, G, M.active.car.x, M.active.car.z);
-  } else if (def.id === 'm2') {
-    beaconOff(M);
-  } else {
-    const pier = westPier(G.city);
-    beaconAt(M, G, pier.x, pier.z);
   }
 
+  M.active = def;
+  M.stage = 0;
+  M.timer = def.seconds || 0;
+  M.timerArmed = false;
+  M.fail = null;
+  M.startT = G.time || 0;
+  M.introShown = false;
+
+  if (def.id === 'm1') armCoupe(M, G);
+  else if (def.id === 'm2') placeMarker(M, G, null);
+  else if (def.id === 'm3') placeMarker(M, G, marks.pier.x, marks.pier.z);
+
+  if (G.hud) {
+    G.hud.toast(def.title);
+    if (G.hud.setBanner) G.hud.setBanner(def.title, 2600);
+  }
   if (G.sound && G.sound.chime) G.sound.chime();
   if (G.missionStart) G.missionStart(def);
-  else if (G.toast) G.toast(def.title);
   return true;
 }
 
-/** The job is done: pay, tell the story, move the thread forward. */
-function finish(M, G) {
-  const def = M.active ? M.active.def : MISSIONS[M.index];
-  if (M.active && M.active.id === 'm3' && G.PO && G.clearWanted) G.clearWanted(G.PO, G);
+/** M1 setup: the coupe goes coral, gets its beacon, and waits to be stolen. */
+function armCoupe(M, G) {
+  const car = coupeOf(G);
+  if (!car) {
+    placeMarker(M, G, null);
+    return;
+  }
+  car.missionCar = true;
+  car.wrecked = false;
+  car.hp = CONFIG.car.hp;
+  car.speed = 0;
+  if (stageOf(M, MISSIONS[0]) === 0) placeMarker(M, G, car.x, car.z);
+}
+
+/** Whole-job teardown: beacon off, timer zeroed, index moved on. */
+function finishMission(M, G, def, story) {
+  const reward = def.reward;
   M.active = null;
   M.timer = 0;
-  M.step = null;
-  M.marker = null;
-  beaconOff(M);
-  M.done += 1;
-  M.index = Math.min(MISSIONS.length, M.index + 1);
-  if (G.missionComplete) G.missionComplete(def.reward, def.story);
-  else if (G.toast) G.toast(`${def.title}: ${def.story}`);
+  M.timerArmed = false;
+  M.index += 1;
+  M.done = M.index;
+  M.fail = null;
+  placeMarker(M, G, null);
+  if (G.addMoney) G.addMoney(reward);
+  if (G.onMissionComplete) G.onMissionComplete({ ...def, story: story || def.story, reward });
+  if (G.saveNow) G.saveNow();
 }
 
-/** The job slipped: toast the hint and reopen it from the top. */
-function fail(M, G, hint) {
-  if (!M.active) return;
-  const def = M.active.def;
-  if (G.missionFail) G.missionFail(def.title, hint);
-  else if (G.toast) G.toast(hint);
-  startMission(M, G, { force: true });
+/** Failure: freeze the job, remember why, and let R pick it back up. */
+function failMission(M, G, def, why, hint) {
+  M.fail = { title: def.title, why, hint: hint || def.retry, id: def.id };
+  M.timer = 0;
+  if (G.hud) {
+    G.hud.toast('Job failed: ' + why);
+    if (G.hud.setBanner) G.hud.setBanner(why + ' \u2014 ' + (hint || def.retry), 3200);
+  }
+  if (G.sound && G.sound.jingle) G.sound.jingle(false);
 }
 
-/* ---------------------------------------------------------------- the jobs */
-
-function stepM1(M, G, here) {
-  const job = M.active;
-  const drop = orchid(G.city);
-
-  if (job.stage === 'steal') {
-    const car = coupe(M, G);
-    if (!car || car.wrecked) {
-      fail(M, G, 'The coupe is gone. Vesper wants it back in one piece.');
-      return;
-    }
-    // The coupe's live position is the marker until she is sitting in it.
-    if (G.inCar === car) {
-      job.stage = 'deliver';
-      M.step = 'deliver';
-      beaconAt(M, G, drop.x, drop.z);
-      if (G.toast) G.toast('Coupe taken. Bring it to the Glass Orchid.');
-      if (G.sound && G.sound.chime) G.sound.chime();
-      return;
-    }
-    beaconAt(M, G, car.x, car.z);
-    return;
-  }
-
-  // deliver: the coupe, stopped, at the door.
-  const car = coupe(M, G);
-  if (!car || car.wrecked) {
-    fail(M, G, 'You wrecked Vesper\'s coupe. She will make you try again.');
-    return;
-  }
-  beaconAt(M, G, drop.x, drop.z);
-  const driving = G.inCar === car;
-  const near = distTo(here.x, here.z, drop.x, drop.z) < BUST_RANGE;
-  const slow = driving && Math.abs(car.speed) < STOP_SPEED;
-  if (near && slow) finish(M, G);
-}
-
-function stepM2(M, G, here, dt) {
-  const job = M.active;
-  const stars = G.PO ? G.PO.stars || 0 : 0;
-
-  if (job.stage === 'arm') {
-    beaconOff(M);
-    if (stars >= 2) {
-      job.stage = 'evade';
-      job.armed = true;
-      M.step = 'evade';
-      M.timer = MONEY.m2EvadeSec;
-      if (G.toast) G.toast(`${MONEY.m2EvadeSec} seconds to lose them.`);
-      if (G.sound && G.sound.chime) G.sound.chime();
-    }
-    return;
-  }
-
-  // evade: the clock runs from the moment the second star landed.
-  M.timer = Math.max(0, M.timer - dt);
-  if (stars <= 0) {
-    finish(M, G);
-    return;
-  }
-  if (M.timer <= 0) fail(M, G, 'The clock beat you. Two stars, one more try.');
-}
-
-function stepM3(M, G, here, dt) {
-  const job = M.active;
-  const pier = westPier(G.city);
-  const drop = orchid(G.city);
-
-  if (job.stage === 'collect') {
-    beaconAt(M, G, pier.x, pier.z);
-    const close = distTo(here.x, here.z, pier.x, pier.z) < PICKUP_RANGE;
-    const slow = !G.inCar || Math.abs(G.inCar.speed) < PICKUP_SPEED;
-    if (!close || !slow) return;
-
-    job.stage = 'deliver';
-    job.car = G.inCar || null;
-    M.step = 'deliver';
-    M.timer = MONEY.m3DeliverySec;
-    beaconAt(M, G, drop.x, drop.z);
-    if (G.PO && G.addStars) G.addStars(G.PO, 3, G);
-    if (G.toast) G.toast('Package in hand. Three stars behind you — go.');
-    if (G.sound && G.sound.chime) G.sound.chime();
-    return;
-  }
-
-  M.timer = Math.max(0, M.timer - dt);
-  beaconAt(M, G, drop.x, drop.z);
-  if (M.timer <= 0) {
-    fail(M, G, 'Two minutes were not enough. Otis still wants that package.');
-    return;
-  }
-  // The drop only counts in the car that carried the package up the coast road.
-  const riding = !job.car || G.inCar === job.car;
-  const close = riding && distTo(here.x, here.z, drop.x, drop.z) < BUST_RANGE;
-  const slow = !G.inCar || Math.abs(G.inCar.speed) < STOP_SPEED;
-  if (close && slow) finish(M, G);
-}
-
-/* ------------------------------------------------------------------ the HUD */
-
-/** What the objective line says and which distance rides beside it. */
-function objectiveFor(M, G, here) {
-  const job = M.active;
-  const def = job.def;
-  const line = { title: def.title, text: def.steps[job.stage] || def.brief, dist: null, timer: 0, at: null };
-
-  if (def.id === 'm1') {
-    const target = job.stage === 'steal' ? coupe(M, G) : orchid(G.city);
-    if (target) {
-      line.dist = Math.round(distTo(here.x, here.z, target.x, target.z));
-      line.at = { x: target.x, z: target.z };
-    }
-  } else if (def.id === 'm2') {
-    // No distance to a feeling: the clock is the whole objective.
-    line.text = job.stage === 'arm'
-      ? `get two stars (${G.PO ? G.PO.stars || 0 : 0}/2)`
-      : 'shake them off — no cop in sight';
-    line.timer = M.timer;
-  } else {
-    const target = job.stage === 'collect' ? westPier(G.city) : orchid(G.city);
-    line.dist = Math.round(distTo(here.x, here.z, target.x, target.z));
-    line.at = { x: target.x, z: target.z };
-    line.timer = M.timer;
-    if (job.stage === 'deliver' && M.timer < TIMER_HURRY) line.text = 'get the package to the Glass Orchid — hurry';
-  }
-  return line;
-}
-
-/** Idle line: where to go next, distance included. */
-function idleObjective(M, G, here) {
-  if (M.index >= MISSIONS.length) return null;
+export function retryMission(M, G) {
+  if (!M || !M.fail) return false;
   const def = MISSIONS[M.index];
-  const give = orchid(G.city);
-  return {
-    title: def.title,
-    text: 'see Vesper at the Glass Orchid',
-    dist: Math.round(distTo(here.x, here.z, give.x, give.z)),
-    timer: 0,
-    at: { x: give.x, z: give.z },
-  };
+  M.fail = null;
+  M.active = null;
+  if (G && G.hud) G.hud.toast('Try again: ' + (def ? def.title : 'the job'));
+  return true;
 }
 
-/** One line for a panel: what's next, or what's finished. */
-export function missionPanelText(M) {
-  if (!M) return 'No jobs.';
-  if (M.index >= MISSIONS.length) return 'All three jobs done. Solara Bay knows your name now.';
-  const def = MISSIONS[M.index];
-  if (M.active) return `${def.title} (${M.active.stage}) — ${def.steps[M.active.stage] || def.brief}`;
-  return `${def.title} — ${def.brief} Reward ${def.prize}.`;
-}
+// ---------- the step ----------
 
-/* --------------------------------------------------------------------- tick */
-
-/**
- * Every step: run the live job, or point her at the next giver, and publish
- * G.objective for the HUD and the minimap diamond.
- */
 export function updateMissions(M, G, dt) {
   if (!M || !G) return;
-  const time = G.time || 0;
-  const here = playerSpot(G);
+  const def = M.active;
+  pulseBeacon(M, G.time || 0);
+  if (G.freezeMissions) return;        // demo scenes pose the job by hand
 
-  pulseBeacon(M, time);
-
-  if (!M.active) {
-    // Jobs open at the Orchid pad; the gold diamond marks the door.
-    const idle = idleObjective(M, G, here);
-    if (idle) {
-      const give = orchid(G.city);
-      beaconAt(M, G, give.x, give.z);
-      G.objective = idle;
-      // Standing on the mark opens the next job.
-      if (here.onFoot && distTo(here.x, here.z, give.x, give.z) < 4.5) startMission(M, G);
-    } else {
-      beaconOff(M);
-      G.objective = null;
+  if (!def) {
+    // Idle: the garage carries the giver marker until the story runs out.
+    const next = defOf(M);
+    if (next && !M.fail) {
+      const marks = landmarks(G);
+      M.target = marks.giver;
+      M.marker = null;
     }
     return;
   }
 
-  const job = M.active;
-  if (job.id === 'm1') stepM1(M, G, here);
-  else if (job.id === 'm2') stepM2(M, G, here, dt);
-  else stepM3(M, G, here, dt);
+  const P = G.P;
+  const car = playerCar(G);
+  const px = car ? car.x : P.pos.x;
+  const pz = car ? car.z : P.pos.z;
 
-  // The job may have ended on this tick; never publish a dead objective.
-  if (!M.active) return;
-  const line = objectiveFor(M, G, here);
-  G.objective = line;
-  if (M.timer > 0) line.timer = M.timer;
-  else delete line.timer;
+  if (def.id === 'm1') stepCoupeJob(M, G, def, px, pz, dt);
+  else if (def.id === 'm2') stepEvadeJob(M, G, def, dt);
+  else if (def.id === 'm3') stepHandoffJob(M, G, def, px, pz, car, dt);
 }
 
-/* ------------------------------------------------------------- save/restore */
+/** M1: steal the coupe (it must be moving or you must be in it), then park it. */
+function stepCoupeJob(M, G, def, px, pz, dt) {
+  const car = coupeOf(G);
+  if (!car) { failMission(M, G, def, 'The coupe is gone', def.retry); return; }
+  if (car.wrecked) { failMission(M, G, def, 'You killed the coupe', def.retry); return; }
 
-/** Continue a saved game: the index comes back, the timers start clean. */
-export function restoreMissions(M, saved) {
-  if (!M) return M;
-  M.index = Math.max(0, Math.min(MISSIONS.length, (saved && saved.missionIndex) || 0));
-  M.active = null;
-  M.timer = 0;
-  M.step = null;
-  return M;
+  if (stageOf(M, def) === 0) {
+    placeMarker(M, G, car.x, car.z);
+    if (car.player || Math.abs(car.speed) > STOP_SPEED) {
+      M.stage = 1;
+      const marks = landmarks(G);
+      placeMarker(M, G, marks.orchid.x, marks.orchid.z);
+      if (G.hud) G.hud.toast('Coupe in hand. Bring it home and stop it in the lockup.');
+    }
+    return;
+  }
+
+  const marks = landmarks(G);
+  placeMarker(M, G, marks.orchid.x, marks.orchid.z);
+  const inside = dist2(car.x, car.z, marks.orchid.x, marks.orchid.z) <= 5 * 5;
+  if (inside && Math.abs(car.speed) < STOP_SPEED) {
+    if (!car.player) car.speed = 0;
+    finishMission(M, G, def, def.story);
+  }
 }
+
+/** M2: wait for two stars, then start the clock and watch them fall to zero. */
+function stepEvadeJob(M, G, def, dt) {
+  const stars = G.PO ? G.PO.stars : 0;
+  M.target = null;
+  M.marker = null;
+  placeMarker(M, G, null);
+
+  if (stageOf(M, def) === 0) {
+    M.timer = 0;
+    if (stars >= 2) {
+      M.stage = 1;
+      M.timer = CONFIG.missions.m2EvadeSec;
+      if (G.hud) G.hud.toast('Two stars. Ninety seconds to lose them.');
+    }
+    return;
+  }
+
+  M.timer = Math.max(0, M.timer - dt);
+  if (stars === 0) { finishMission(M, G, def, def.story); return; }
+  if (M.timer <= 0) {
+    failMission(M, G, def, 'The clock ran out with heat still on you', def.retry);
+  }
+}
+
+/** M3: the package on the pier, three stars with it, then the lockup before the clock. */
+function stepHandoffJob(M, G, def, px, pz, car, dt) {
+  const marks = landmarks(G);
+  M.timer = Math.max(0, M.timer - dt);
+
+  if (stageOf(M, def) === 0) {
+    placeMarker(M, G, marks.pier.x, marks.pier.z);
+    const close = dist2(px, pz, marks.pier.x, marks.pier.z) <= PICKUP_RADIUS * PICKUP_RADIUS;
+    if (close) {
+      M.stage = 1;
+      placeMarker(M, G, marks.orchid.x, marks.orchid.z);
+      if (G.PO) addStars(G.PO, 3, G);
+      if (G.hud) { G.hud.toast('Package secured. Every unit in the bay heard that.'); G.hud.starsPulse(); }
+      if (G.sound && G.sound.chime) G.sound.chime();
+    }
+    if (M.timer <= 0) failMission(M, G, def, 'The package window closed', def.retry);
+    return;
+  }
+
+  placeMarker(M, G, marks.orchid.x, marks.orchid.z);
+  const inside = dist2(px, pz, marks.orchid.x, marks.orchid.z) <= 6 * 6;
+  const slow = car ? Math.abs(car.speed) < STOP_SPEED : true;
+  if (inside && slow) {
+    if (G.PO) {
+      G.PO.stars = 0;
+      if (G.clearWanted) G.clearWanted();
+    }
+    finishMission(M, G, def, def.story);
+    return;
+  }
+  if (M.timer <= 0) {
+    failMission(M, G, def, 'The package never made it to the Orchid', def.retry);
+  }
+}
+
+// ---------- what the HUD prints ----------
+
+/** Line for #objective plus a countdown, or an empty pair when there is no work. */
+export function missionPanelText(M, G) {
+  const def = M && M.active;
+  if (M && M.fail) {
+    return { title: 'Job failed', text: M.fail.why + ' \u2014 ' + M.fail.hint, timer: 0 };
+  }
+  if (!def) {
+    const next = M ? MISSIONS[M.index] : null;
+    if (!next) return { title: '', text: '', timer: 0 };
+    return { title: next.title, text: 'Next job: ' + next.title + ' \u2014 the Glass Orchid garage', timer: 0 };
+  }
+
+  const step = stepText(M, def, G);
+  const who = G && G.inCar ? { x: G.inCar.x, z: G.inCar.z } : G && G.P ? { x: G.P.pos.x, z: G.P.pos.z } : null;
+  let away = '';
+  if (who && M.target) {
+    away = ' \u00b7 ' + Math.round(Math.hypot(who.x - M.target.x, who.z - M.target.z)) + ' m';
+  }
+  return { title: def.title, text: def.title + ' \u2014 ' + step + away, timer: def.id === 'm2' && stageOf(M, def) === 0 ? 0 : M.timer };
+}
+
+function stepText(M, def, G) {
+  if (def.id === 'm1') {
+    return stageOf(M, def) === 0 ? 'steal the coral coupe' : 'drive it to the Glass Orchid and stop in the marker';
+  }
+  if (def.id === 'm2') {
+    return stageOf(M, def) === 0 ? 'draw two stars of heat' : 'lose the police before the clock runs out';
+  }
+  return stageOf(M, def) === 0 ? 'pick up the package on the west pier' : 'deliver the package to the Glass Orchid';
+}
+
+/** Short name of the job after this one, for the complete panel's button. */
+export function nextMissionTitle(M) {
+  const next = M ? MISSIONS[M.index] : null;
+  return next ? next.title : null;
+}
+
+

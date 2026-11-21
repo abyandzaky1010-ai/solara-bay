@@ -1,206 +1,240 @@
-// Solara Bay — every transient spark in the world: tracers, muzzle flashes,
-// explosions and smoke. One clear job, and one rule: nothing allocates at
-// runtime. A fixed pool of sprites is built at start-up and recycled forever.
-
+// One job: the flashes. Tracers, muzzle blooms, explosions, smoke and the red
+// vignette when you get hit. Every quad is built once at boot and recycled, so a
+// firefight on Meridian avenue allocates nothing.
 import * as THREE from 'three';
 
 const POOL_SIZE = 96;
 const TRACER_TTL = 0.06;
 const MUZZLE_TTL = 0.05;
-const EXPLOSION_TTL = 0.7;
+const DEBRIS_TTL = 0.7;
+const FLASH_TTL = 0.42;
 const SMOKE_TTL = 1.2;
-const SHARDS = 10;
-const FLASH_TTL = 0.22;
-const HURT_CLASS_MS = 200;
+const SPARK_TTL = 0.14;
+const DEBRIS_COUNT = 10;
+const HURT_MS = 200;
+const FIRE = [0xffd24a, 0xff9a3a, 0xff6a2a, 0xd94a1e, 0x8a3a18];
+const SMOKE_HEX = 0xb8b3a8;
 
-// Hot at the core, sooty at the edge.
-const FIRE_HOT = 0xfff1b8;
-const FIRE_MID = 0xff8a3c;
-const FIRE_DARK = 0xb5401c;
-const SOOT = 0x2a2624;
-const SMOKE = 0x9b968e;
-const MUZZLE = 0xffd77a;
-const TRACER = 0xfff3c8;
+let pool = null;      // { scene, items, cursor }
+let hudRoot = null;   // #hud, for the hurt vignette
 
-const pool = [];
-let quadGeo = null;
-let boxGeo = null;
-let ready = false;
-let hurtUntil = 0;
-
-/* --------------------------------------------------------------------- the pool */
-
-function makeSprite() {
-  const mat = new THREE.MeshBasicMaterial({
+/** One pooled quad plus the state it needs to play its short life. */
+function makeSlot(scene, geometry) {
+  const material = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
     opacity: 0,
     depthWrite: false,
     side: THREE.DoubleSide,
+    fog: false,
   });
-  const mesh = new THREE.Mesh(quadGeo, mat);
+  const mesh = new THREE.Mesh(geometry, material);
   mesh.visible = false;
+  mesh.renderOrder = 5;
   mesh.frustumCulled = false;
-  mesh.renderOrder = 4;
-  return { mesh, mat, alive: false, t: 0, ttl: 0, grow: 0, gravity: 0, vx: 0, vy: 0, vz: 0 };
+  scene.add(mesh);
+  return {
+    mesh, material, alive: false, t: 0, ttl: 1,
+    vx: 0, vy: 0, vz: 0,   // velocity, metres/second
+    grav: 0,               // downward pull for debris
+    grow: 1,               // final scale multiplier at ttl
+    fade: 1,               // starting opacity
+    flat: true,            // lying on the ground plane, or upright
+    spin: 0,
+    size: 1,
+  };
 }
 
-/** Build the pool into the scene. Idempotent: a second call adds nothing twice. */
+/** Build the pool and register it on W. Called once from main. */
 export function initEffects(W) {
-  if (!W || !W.scene) return { size: 0 };
-  if (!ready) {
-    quadGeo = new THREE.PlaneGeometry(1, 1);
-    boxGeo = new THREE.BoxGeometry(1, 1, 1);
-    for (let i = 0; i < POOL_SIZE; i++) pool.push(makeSprite());
-    ready = true;
+  const scene = W && W.scene ? W.scene : W;
+  const quad = new THREE.PlaneGeometry(1, 1);
+  const items = [];
+  for (let i = 0; i < POOL_SIZE; i++) items.push(makeSlot(scene, quad));
+  pool = { scene, items, cursor: 0 };
+  if (typeof document !== 'undefined') hudRoot = document.getElementById('hud');
+  if (W) W.fx = pool;
+  return pool;
+}
+
+/** Next free slot, or the round-robin victim when the pool is full. */
+function take(ttl) {
+  if (!pool) return null;
+  const items = pool.items;
+  let slot = null;
+  for (let i = 0; i < items.length; i++) {
+    const idx = (pool.cursor + i) % items.length;
+    if (!items[idx].alive) { slot = items[idx]; pool.cursor = idx; break; }
   }
-  for (const s of pool) if (!s.mesh.parent) W.scene.add(s.mesh);
-  return { size: pool.length };
+  if (!slot) { slot = items[pool.cursor]; }
+  pool.cursor = (pool.cursor + 1) % items.length;
+  slot.alive = true;
+  slot.t = 0;
+  slot.ttl = ttl;
+  slot.mesh.visible = true;
+  return slot;
 }
 
-/** Claim a dead sprite for ttl seconds; when the pool is dry, recycle the oldest. */
-function claim(ttl) {
-  let s = null;
-  for (let i = 0; i < pool.length; i++) {
-    if (!pool[i].alive) {
-      s = pool[i];
-      break;
-    }
-    if (!s || pool[i].t > s.t) s = pool[i];
-  }
-  s.alive = true;
-  s.t = 0;
-  s.ttl = ttl;
-  s.grow = 0;
-  s.gravity = 0;
-  s.vx = s.vy = s.vz = 0;
-  s.mesh.visible = true;
-  s.mat.opacity = 1;
-  s.mesh.rotation.set(0, 0, 0);
-  s.mesh.scale.set(1, 1, 1);
-  if (s.mesh.geometry !== quadGeo) s.mesh.geometry = quadGeo;
-  return s;
+/** Lay a quad flat on the ground plane at a spot, with a size, colour and twist. */
+function placeFlat(slot, x, y, z, size, hex, opacity, rotY) {
+  const m = slot.mesh;
+  m.position.set(x, y, z);
+  m.rotation.set(-Math.PI / 2, 0, rotY || 0);
+  m.scale.set(size, size, 1);
+  slot.material.color.setHex(hex);
+  slot.material.opacity = opacity;
+  slot.size = size;
+  slot.flat = true;
 }
 
-/** A square of colour, sized in metres, fading out over its ttl. */
-function quad(at, hex, size, ttl, grow) {
-  const s = claim(ttl);
-  s.mat.color.setHex(hex);
-  s.grow = grow || 0;
-  s.mesh.position.set(at.x, at.y || 0, at.z);
-  s.mesh.scale.set(size, size, 1);
-  return s;
-}
+// ---------- effects ----------
 
-/* ------------------------------------------------------------------- emitters */
-
-/** A hot line from a muzzle to whatever the round met. */
+/** A bullet's path: a hair-thin quad stretched from a to b, gone in a blink. */
 export function spawnTracer(a, b) {
-  if (!ready || !a || !b) return;
-  const s = claim(TRACER_TTL);
-  s.mesh.geometry = boxGeo;
-  s.mat.color.setHex(TRACER);
-  s.mat.opacity = 0.95;
-  const dx = b.x - a.x, dy = (b.y || 0) - (a.y || 0), dz = b.z - a.z;
-  s.mesh.position.set(a.x + dx * 0.5, (a.y || 0) + dy * 0.5, a.z + dz * 0.5);
-  s.mesh.scale.set(0.045, 0.045, Math.max(0.4, Math.hypot(dx, dy, dz)));
-  s.mesh.rotation.set(0, Math.atan2(dx, dz), 0);
+  const slot = take(TRACER_TTL);
+  if (!slot || !a || !b) return;
+  const ay = a.y == null ? 1.2 : a.y;
+  const dy = (b.y == null ? 1.2 : b.y) - ay;
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const len = Math.hypot(dx, dy, dz) || 0.01;
+  const m = slot.mesh;
+  m.position.set(a.x + dx / 2, ay + dy / 2, a.z + dz / 2);
+  m.rotation.set(0, Math.atan2(dx, dz) - Math.PI / 2, -Math.atan2(dy, Math.hypot(dx, dz)));
+  m.scale.set(0.07, len, 1);
+  slot.material.color.setHex(0xfff4c4);
+  slot.material.opacity = 0.9;
+  slot.flat = false;
+  slot.size = len;
+  slot.grow = 1;
+  slot.vx = slot.vy = slot.vz = 0;
+  slot.grav = 0;
+  slot.spin = 0;
+  slot.fade = 1;
 }
 
-/** Two frames of star at the barrel. */
+/** Muzzle bloom: a warm quad just off the barrel. */
 export function spawnMuzzle(pos) {
-  if (!ready || !pos) return;
-  const s = quad(pos, MUZZLE, 0.5, MUZZLE_TTL, -6);
-  s.mesh.position.y = pos.y || 1.2;
-  s.mat.opacity = 0.95;
+  const slot = take(MUZZLE_TTL);
+  if (!slot || !pos) return;
+  placeFlat(slot, pos.x, pos.y == null ? 1.25 : pos.y, pos.z + 0.02, 0.9, 0xfff0b0, 0.95, Math.random() * 3);
+  slot.grow = 1.9;
+  slot.vx = slot.vy = slot.vz = 0;
+  slot.grav = 0;
+  slot.fade = 1;
 }
 
-/** A car goes up: one white core, ten shards of fire and soot, one rising cloud. */
+/** A car going up: ten fire quads thrown out with gravity, plus one wide flash. */
 export function spawnExplosion(pos) {
-  if (!ready || !pos) return;
-  const y = pos.y !== undefined ? pos.y : 1;
-  quad({ x: pos.x, y: y + 1.2, z: pos.z }, FIRE_HOT, 7, FLASH_TTL, 3.5);
-
-  for (let i = 0; i < SHARDS; i++) {
-    const a = (i / SHARDS) * Math.PI * 2 + Math.random() * 0.5;
-    const hex = i % 3 === 0 ? SOOT : i % 2 === 0 ? FIRE_MID : FIRE_DARK;
-    const shard = quad({ x: pos.x, y: y + 0.8, z: pos.z }, hex, 1.3 + Math.random() * 1.5, EXPLOSION_TTL, 0.6);
-    shard.vx = Math.cos(a) * (5 + Math.random() * 9);
-    shard.vy = 4 + Math.random() * 7;
-    shard.vz = Math.sin(a) * (5 + Math.random() * 9);
-    shard.gravity = 16;
+  if (!pos) return;
+  const y = pos.y == null ? 1 : pos.y;
+  for (let i = 0; i < DEBRIS_COUNT; i++) {
+    const slot = take(DEBRIS_TTL);
+    if (!slot) continue;
+    const angle = (i / DEBRIS_COUNT) * Math.PI * 2 + Math.random() * 0.4;
+    const speed = 5 + Math.random() * 7;
+    placeFlat(slot, pos.x, y, pos.z, 1.1 + Math.random() * 1.7, FIRE[i % FIRE.length], 0.95, angle);
+    slot.grow = 1.5;
+    slot.vx = Math.cos(angle) * speed;
+    slot.vz = Math.sin(angle) * speed;
+    slot.vy = 3 + Math.random() * 5;
+    slot.grav = 9;
+    slot.spin = (Math.random() - 0.5) * 6;
+    slot.fade = 0.85;
   }
-
-  const cloud = quad({ x: pos.x, y: y + 2.2, z: pos.z }, SMOKE, 6, EXPLOSION_TTL, 1.4);
-  cloud.vy = 1.4;
+  const flash = take(FLASH_TTL);
+  if (!flash) return;
+  placeFlat(flash, pos.x, y + 0.4, pos.z, 2.5, 0xfff1c0, 1, 0);
+  flash.grow = 3.4;
+  flash.vx = flash.vz = 0;
+  flash.vy = 2.2;
+  flash.grav = 0;
+  flash.spin = 0;
+  flash.fade = 1;
 }
 
-/** One slow grey breath, for smoking engines and tired bumpers. */
+/** A grey puff that drifts up and thins: wreck smoke, spinning tyres, a downed cop. */
 export function spawnSmokePuff(pos) {
-  if (!ready || !pos) return;
-  const s = quad(pos, SMOKE, 1.6, SMOKE_TTL, 1.8);
-  s.mesh.position.y = (pos.y || 1) + 0.4;
-  s.vy = 1.5;
-  s.vx = (Math.random() - 0.5) * 0.6;
-  s.vz = (Math.random() - 0.5) * 0.6;
-  s.mat.opacity = 0.5;
+  const slot = take(SMOKE_TTL);
+  if (!slot || !pos) return;
+  const m = slot.mesh;
+  m.position.set(pos.x + (Math.random() - 0.5) * 0.6, pos.y == null ? 1 : pos.y, pos.z + (Math.random() - 0.5) * 0.6);
+  m.rotation.set(0, 0, 0);
+  const size = 1.2 + Math.random() * 0.8;
+  m.scale.set(size, size, 1);
+  slot.material.color.setHex(SMOKE_HEX);
+  slot.material.opacity = 0.42;
+  slot.size = size;
+  slot.flat = false;
+  slot.grow = 2.1;
+  slot.vx = (Math.random() - 0.5) * 0.8;
+  slot.vz = (Math.random() - 0.5) * 0.8;
+  slot.vy = 1.4;
+  slot.grav = 0;
+  slot.spin = 0;
+  slot.fade = 1;
 }
 
-/* ------------------------------------------------------------------- vignette */
+/** Short bright spark at an impact or a wall scrape. */
+export function spawnSpark(pos) {
+  const slot = take(SPARK_TTL);
+  if (!slot || !pos) return;
+  placeFlat(slot, pos.x, pos.y == null ? 1 : pos.y, pos.z, 0.5, 0xffe9a8, 0.9, Math.random() * 3);
+  slot.grow = 1.6;
+  slot.vx = slot.vy = slot.vz = 0;
+  slot.grav = 0;
+  slot.fade = 1;
+}
 
-/** Flash the red edge of the screen for a moment: the CSS already knows 'hurt'. */
+/** Red vignette on the HUD for a fifth of a second. */
 export function flashDamage() {
-  const hud = typeof document !== 'undefined' ? document.getElementById('hud') : null;
-  if (!hud) return;
-  hud.classList.remove('hurt');
-  void hud.offsetWidth; // restart the fade on back-to-back hits
-  hud.classList.add('hurt');
-  hurtUntil = Date.now() + HURT_CLASS_MS;
+  if (typeof document === 'undefined') return;
+  if (!hudRoot) hudRoot = document.getElementById('hud');
+  if (!hudRoot) return;
+  hudRoot.classList.add('damage');
+  clearTimeout(flashDamage.timer);
+  flashDamage.timer = setTimeout(() => {
+    if (hudRoot) hudRoot.classList.remove('damage');
+  }, HURT_MS);
 }
 
-/** Age the vignette class out; safe to call every frame. */
-export function updateHurtFx() {
-  if (!hurtUntil || Date.now() < hurtUntil) return;
-  hurtUntil = 0;
-  const hud = typeof document !== 'undefined' ? document.getElementById('hud') : null;
-  if (hud) hud.classList.remove('hurt');
-}
+// ---------- the step ----------
 
-/* ----------------------------------------------------------------------- tick */
-
-/** Move, grow and fade every live sprite; hide the ones whose time is up. */
-export function updateEffects(ignored, dt) {
-  if (!ready) return;
-  const step = Math.min(dt || 0, 0.1);
-  for (const s of pool) {
-    if (!s.alive) continue;
-    s.t += step;
-    if (s.t >= s.ttl) {
-      s.alive = false;
-      s.mesh.visible = false;
-      s.mat.opacity = 0;
+/** Advance every live sprite; hide it once its ttl runs out. */
+export function updateEffects(W, dt) {
+  const P = pool || (W && W.fx);
+  if (!P || !dt) return;
+  const items = P.items;
+  for (let i = 0; i < items.length; i++) {
+    const slot = items[i];
+    if (!slot.alive) continue;
+    slot.t += dt;
+    const k = slot.t / slot.ttl;
+    if (k >= 1) {
+      slot.alive = false;
+      slot.mesh.visible = false;
+      slot.material.opacity = 0;
       continue;
     }
-    const p = s.mesh.position;
-    if (s.gravity) s.vy -= s.gravity * step;
-    p.x += s.vx * step;
-    p.y += s.vy * step;
-    p.z += s.vz * step;
-    if (p.y < 0.05) {
-      p.y = 0.05;
-      if (s.gravity) s.vy *= -0.3;
-      s.vx *= 0.7;
-      s.vz *= 0.7;
-    }
-    if (s.grow) s.mesh.scale.multiplyScalar(Math.max(0.05, 1 + s.grow * step));
-    s.mat.opacity = (1 - s.t / s.ttl) ** 2;
+    const m = slot.mesh;
+    m.position.x += slot.vx * dt;
+    m.position.z += slot.vz * dt;
+    m.position.y += slot.vy * dt;
+    if (slot.grav) slot.vy -= slot.grav * dt;
+    if (slot.spin && slot.flat) m.rotation.z += slot.spin * dt;
+
+    // Grow while fading; a tracer keeps its length and only loses opacity.
+    const s = slot.size * (1 + (slot.grow - 1) * k);
+    if (slot.flat) m.scale.set(s, s, 1);
+    else if (slot.grow > 1) m.scale.set(s, s, 1);
+    slot.material.opacity = Math.max(0, slot.fade * (1 - k * k));
   }
-  updateHurtFx();
 }
 
-/** How many sprites are burning right now (debug and shot harness). */
-export function effectStats() {
-  let live = 0;
-  for (const s of pool) if (s.alive) live++;
-  return { live, size: pool.length };
+/** How many sprites are live, for the pause screen and the debug HUD. */
+export function liveEffects() {
+  if (!pool) return 0;
+  let n = 0;
+  for (let i = 0; i < pool.items.length; i++) if (pool.items[i].alive) n++;
+  return n;
 }

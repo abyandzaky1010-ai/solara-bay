@@ -1,386 +1,409 @@
-// Solara Bay — the city itself: districts, towers, the park, the waterfront
-// props, the named places and every parked car. All geometry lives here.
-
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { C, material } from './palette.js';
-import { addCollider } from './world.js';
+import { addCollider, STREETS } from './world.js';
 
-const LAND = CONFIG.world.half;
-// Block boundaries on both axes: five lines make four 80 m blocks per axis.
-const LINES = [-LAND, -80, 0, 80, LAND];
+// One job: the city itself. Meridian glass towers east, pastel Palm Ward west,
+// Verde Park in the middle-west, a palm-lined promenade, named venues and parking.
+
+const EDGE = 6;          // asphalt half-width, kept local so block maths reads plainly
+const INNER = 77;        // building line sits six metres off the block edge
 const PARK = CONFIG.world.parkRect;
-const SEA = CONFIG.world.sea;
 
-// Verde Park owns the Palm Ward block beside the sea; the Garage owns the
-// Meridian block north of the cross avenue.
-const PARK_BLOCK = { ix: 0, iz: 2 };
-const ORCHID_BLOCK = { ix: 1, iz: 0 };
+// ---------- small geometry helpers ----------
 
-function flat(x0, z0, x1, z1, y, paint) {
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), paint);
-  mesh.rotation.x = -Math.PI / 2;
-  mesh.position.set((x0 + x1) / 2, y, (z0 + z1) / 2);
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
-function block(x, z, w, d, h, y, paint) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), paint);
-  mesh.position.set(x, y, z);
+function box(w, h, d, hex, opts) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material(hex, opts));
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
 }
 
-function rect(ix, iz) {
-  return { x0: LINES[ix], x1: LINES[ix + 1], z0: LINES[iz], z1: LINES[iz + 1] };
+function slab(parent, w, h, d, hex, x, y, z, opts) {
+  const m = box(w, h, d, hex, opts);
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
 }
 
-function inPark(x, z, pad = 0) {
-  return x > PARK.x0 - pad && x < PARK.x1 + pad && z > PARK.z1 - pad && z < PARK.z1 + pad;
+function disc(parent, radius, hex, x, y, z, opts) {
+  const m = new THREE.Mesh(new THREE.CircleGeometry(radius, 22), material(hex, opts));
+  m.rotation.x = -Math.PI / 2;
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
 }
 
-function palm(px, pz, scale) {
-  const group = new THREE.Group();
+/** Palm: leaning trunk, five drooping frond plates, a crown. Cheap at any distance. */
+function palm(parent, x, z, height, scale = 1) {
+  const g = new THREE.Group();
   const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.2 * scale, 0.33 * scale, 6.5 * scale, 6),
+    new THREE.CylinderGeometry(0.22 * scale, 0.34 * scale, height, 7),
     material(C.trunk),
   );
-  trunk.position.y = 3.25 * scale;
+  trunk.position.y = height / 2;
   trunk.castShadow = true;
-  group.add(trunk);
+  trunk.rotation.z = 0.05;
+  g.add(trunk);
+
   for (let i = 0; i < 5; i++) {
-    const leaf = new THREE.Mesh(new THREE.BoxGeometry(3.4 * scale, 0.13, 0.85 * scale), material(C.frond));
-    const a = (i / 5) * Math.PI * 2;
-    leaf.position.set(Math.cos(a) * 1.5 * scale, 6.4 * scale, Math.sin(a) * 1.5 * scale);
-    leaf.rotation.set(0, -a, -0.2);
-    leaf.castShadow = true;
-    group.add(leaf);
-  }
-  group.position.set(px, 0, pz);
-  return group;
-}
-
-// Hundreds of cheap boxes in one draw call: roof clutter, kerb planters, lamps.
-function crowd(W, points, sx, sy, sz, hex) {
-  if (!points.length) return;
-  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(sx, sy, sz), material(hex), points.length);
-  const m = new THREE.Matrix4();
-  points.forEach((p, i) => {
-    m.identity();
-    m.setPosition(p.x, p.y, p.z);
-    mesh.setMatrixAt(i, m);
-  });
-  mesh.instanceMatrix.needsUpdate = true;
-  W.scene.add(mesh);
-}
-
-function layPark(W, city, rng) {
-  const cx = (PARK.x0 + PARK.x1) / 2;
-  const cz = (PARK.z0 + PARK.z1) / 2;
-  const wide = PARK.x1 - PARK.x0;
-  const deep = PARK.z1 - PARK.z0;
-  W.scene.add(flat(PARK.x0, PARK.z0, PARK.x1, PARK.z1, 0.1, material(C.grass)));
-
-  // Hedge ring. The south edge is the block's avenue side, so it stays open.
-  const hedge = material(0x4c8a45);
-  W.scene.add(block(cx, PARK.z1 - 0.55, wide, 1.1, 0.9, 0.45, hedge));
-  W.scene.add(block(PARK.x0 + 0.55, cz, 1.1, deep, 0.9, 0.45, hedge));
-  W.scene.add(block(PARK.x1 - 0.55, cz, 1.1, deep, 0.9, 0.45, hedge));
-
-  // Paving: north-south walk into the park, plus an east-west cross walk.
-  W.scene.add(flat(cx - 2.4, PARK.z0 + 2, cx + 2.4, PARK.z1 - 2, 0.12, material(0xdbd2c0)));
-  W.scene.add(flat(PARK.x0 + 2, cz - 2.4, PARK.x1 - 2, cz + 2.4, 0.12, material(0xdbd2c0)));
-
-  // Pond in the northern quarter, with a sandy shore ring.
-  const pondX = PARK.x1 - 16;
-  const pondZ = PARK.z1 - 20;
-  const pondR = 9.5;
-  const shore = new THREE.Mesh(new THREE.CircleGeometry(pondR + 1.6, 26), material(0xd9c8a2));
-  shore.rotation.x = -Math.PI / 2;
-  shore.position.set(pondX, 0.115, pondZ);
-  W.scene.add(shore);
-  const pond = new THREE.Mesh(new THREE.CircleGeometry(pondR, 26), material(C.water));
-  pond.rotation.x = -Math.PI / 2;
-  pond.position.set(pondX, 0.13, pondZ);
-  W.scene.add(pond);
-
-  const palms = [
-    [PARK.x0 + 7, PARK.z1 - 8], [PARK.x0 + 21, PARK.z1 - 6], [PARK.x0 + 8, PARK.z1 - 26],
-    [PARK.x0 + 25, PARK.z1 - 22], [PARK.x0 + 10, PARK.z0 + 44], [PARK.x0 + 31, PARK.z0 + 40],
-    [PARK.x1 - 9, PARK.z0 + 44], [PARK.x1 - 24, PARK.z0 + 50],
-  ];
-  for (const [px, pz] of palms) W.scene.add(palm(px, pz, rng.range(1, 1.25)));
-
-  const benches = [
-    [pondX - 17, pondZ, Math.PI / 2],
-    [pondX, pondZ - 14, 0],
-    [PARK.x0 + 30, cz + 12, 0],
-  ];
-  for (const [bx, bz, turn] of benches) {
-    const seat = block(bx, bz, 2.6, 0.7, 0.16, 0.58, material(0x9c6b45));
-    seat.rotation.y = turn;
-    W.scene.add(seat);
-    const back = block(bx - Math.sin(turn) * 0.32, bz - Math.cos(turn) * 0.32, 2.6, 0.16, 0.6, 0.95, material(0x9c6b45));
-    back.rotation.y = turn;
-    W.scene.add(back);
+    const angle = (i / 5) * Math.PI * 2;
+    const frond = new THREE.Mesh(new THREE.BoxGeometry(0.6 * scale, 0.1, 3.4 * scale), material(C.frond));
+    frond.castShadow = true;
+    frond.position.set(Math.cos(angle) * 1.4 * scale, height - 0.15, Math.sin(angle) * 1.4 * scale);
+    frond.rotation.y = angle;
+    frond.rotation.x = 0.32;
+    g.add(frond);
   }
 
-  // The rifle crate sits in the south-east corner, clear of the pond.
-  const crateX = PARK.x1 - 12;
-  const crateZ = cz + 16;
-  W.scene.add(block(crateX, crateZ, 1.6, 1.6, 1.2, 0.7, material(0xa8804f)));
-  W.scene.add(block(crateX, crateZ, 1.76, 1.76, 0.14, 1.37, material(0x8a683d)));
-  addCollider(W, crateX, crateZ, 1.76, 1.76, 1.4);
+  const crown = new THREE.Mesh(new THREE.SphereGeometry(0.6 * scale, 8, 6), material(C.frond));
+  crown.position.y = height - 0.2;
+  crown.castShadow = true;
+  g.add(crown);
 
-  city.park = {
-    x0: PARK.x0, x1: PARK.x1, z0: PARK.z0, z1: PARK.z1,
-    pond: { x: pondX, z: pondZ, r: pondR },
-  };
+  g.position.set(x, 0, z);
+  g.rotation.y = x * 0.37 + z * 0.11;
+  parent.add(g);
+  return g;
+}
+
+function bench(parent, x, z, turn) {
+  const g = new THREE.Group();
+  slab(g, 2.2, 0.12, 0.6, 0xa9713f, 0, 0.46, 0);
+  slab(g, 2.2, 0.5, 0.12, 0x9b6537, 0, 0.74, -0.26);
+  slab(g, 0.12, 0.44, 0.5, 0x4a4f57, -0.9, 0.22, 0);
+  slab(g, 0.12, 0.44, 0.5, 0x4a4f57, 0.9, 0.22, 0);
+  g.position.set(x, 0, z);
+  g.rotation.y = turn;
+  parent.add(g);
+}
+
+/** Flat pad with awnings and posts: the stand-in for a building we cannot walk into. */
+function padBase(parent, x, z, w, d, padHex, awningHex) {
+  slab(parent, w, 0.06, d, padHex, x, 0.03, z);
+  for (const side of [-1, 1]) {
+    slab(parent, w * 0.6, 0.14, 1.8, awningHex, x, 3.1, z + side * (d / 2 + 0.9));
+    slab(parent, 0.22, 3.1, 0.22, 0x55606b, x - w * 0.28, 1.55, z + side * (d / 2 + 1.7));
+    slab(parent, 0.22, 3.1, 0.22, 0x55606b, x + w * 0.28, 1.55, z + side * (d / 2 + 1.7));
+  }
+  return { x, z, w, d };
+}
+
+function pickHex(rng, list) {
+  return list[Math.min(list.length - 1, Math.floor(rng.next() * list.length))];
+}
+
+// ---------- districts ----------
+
+/** Steel mullions down the front and side faces, plus the crown and plant box. */
+function dressTower(parent, rng, cx, cz, w, d, height, steelHex) {
+  const stripes = Math.max(3, Math.floor(w / 4));
+  for (let i = 0; i < stripes; i++) {
+    const off = -w / 2 + (i + 0.5) * (w / stripes);
+    slab(parent, 0.35, height * 0.94, 0.3, steelHex, cx + off, height / 2, cz + d / 2 + 0.16);
+    slab(parent, 0.3, height * 0.94, 0.35, steelHex, cx + w / 2 + 0.16, height / 2, cz + off * 0.8);
+  }
+  slab(parent, w + 1.2, 1.4, d + 1.2, steelHex, cx, height + 0.7, cz);
+  slab(parent, w * 0.35, 3.2, d * 0.35, 0xb9c3cc, cx + w * 0.18, height + 2.9, cz - d * 0.18);
+  slab(parent, 0.5, rng.range(6, 16), 0.5, 0xd7dee4, cx - w * 0.25, height + 6, cz + d * 0.2);
+}
+
+/** Meridian: glass tower, steel crown, mullions on two faces, rooftop plant box. */
+function tower(parent, rng, cx, cz, w, d) {
+  const height = rng.range(30, 90);
+  const glassHex = pickHex(rng, C.glass);
+  const steelHex = pickHex(rng, C.steel);
+
+  const body = box(w, height, d, glassHex, { glassy: true });
+  body.position.set(cx, height / 2, cz);
+  parent.add(body);
+
+  dressTower(parent, rng, cx, cz, w, d, height, steelHex);
+  return { x: cx, z: cz, w, d, h: height, color: glassHex, district: 'meridian' };
+}
+
+/** Palm Ward: stucco block, warm roof slab, corner stair box, one window band per face. */
+function stuccoHouse(parent, rng, cx, cz, w, d) {
+  const height = rng.range(8, 24);
+  const wallHex = pickHex(rng, C.stucco);
+
+  const body = box(w, height, d, wallHex);
+  body.position.set(cx, height / 2, cz);
+  parent.add(body);
+
+  slab(parent, w + 1.0, 0.9, d + 1.0, C.roof, cx, height + 0.45, cz);
+  slab(parent, w * 0.4, 2.4, d * 0.4, 0xf0e6d2, cx - w * 0.2, height + 1.9, cz + d * 0.2);
+
+  const bandY = Math.max(3.2, height * 0.55);
+  slab(parent, w * 0.78, 1.5, 0.2, 0x9fb6c4, cx, bandY, cz + d / 2 + 0.12);
+  slab(parent, w * 0.78, 1.5, 0.2, 0x9fb6c4, cx, bandY, cz - d / 2 - 0.12);
+  slab(parent, 0.2, 1.5, d * 0.7, 0x9fb6c4, cx + w / 2 + 0.12, bandY, cz);
+
+  return { x: cx, z: cz, w, d, h: height, color: wallHex, district: 'palmward' };
+}
+
+/**
+ * Four cells in a block: two facing the street, two behind them. Each footprint
+ * is capped by its own cell, so neighbours can never intersect.
+ */
+function lotsForBlock(rng, x0, x1, z0, z1) {
+  const count = rng.int(2, 4);
+  const cells = [[0, 0], [1, 0], [0, 1], [1, 1]].slice(0, count);
+  const cellW = (x1 - x0 - 2) / 2;
+  const cellD = (z1 - z0 - 2) / 2;
+  const w = Math.min(rng.range(15, 24), cellW);
+  const d = Math.min(rng.range(13, 22), cellD);
+  return cells.map(([cx, cz]) => ({
+    x: x0 + 1 + cellW * (cx + 0.5),
+    z: z0 + 1 + cellD * (cz + 0.5),
+    w,
+    d,
+  }));
+}
+
+/** One block: 2-4 lots, towers east of the middle, stucco west, colliders for all. */
+function fillBlock(W, group, rng, city, x0, x1, z0, z1) {
+  const meridian = (x0 + x1) / 2 >= 0;
+  for (const lot of lotsForBlock(rng, x0, x1, z0, z1)) {
+    const b = meridian
+      ? tower(group, rng, lot.x, lot.z, lot.w, lot.d)
+      : stuccoHouse(group, rng, lot.x, lot.z, lot.w, lot.d);
+    addCollider(W, b.x, b.z, b.w, b.d, b.h);
+    city.buildings.push(b);
+  }
+}
+
+function buildBlocks(W, rng, city) {
+  const group = new THREE.Group();
+  group.name = 'blocks';
+  W.scene.add(group);
+
+  for (let ix = 0; ix < STREETS.length - 1; ix++) {
+    const x0 = STREETS[ix] + EDGE + 3;
+    const x1 = STREETS[ix + 1] - EDGE - 3;
+    for (let iz = 0; iz < STREETS.length - 1; iz++) {
+      const z0 = STREETS[iz] + EDGE + 3;
+      const z1 = STREETS[iz + 1] - EDGE - 3;
+
+      // Verde Park owns its block outright.
+      if (x1 > PARK.minX && x0 < PARK.maxX && z1 > PARK.minZ && z0 < PARK.maxZ) continue;
+
+      // VINE MART keeps the shop block clear for its counters.
+      if (ix === 2 && iz === 2) {
+        city.lots.shop = { minX: x0, maxX: x1, minZ: z0, maxZ: z1 };
+        continue;
+      }
+
+      fillBlock(W, group, rng, city, x0, x1, z0, z1);
+    }
+  }
+}
+
+// ---------- Verde Park ----------
+
+function buildPark(W, rng, city) {
+  const g = new THREE.Group();
+  g.name = 'verde-park';
+  W.scene.add(g);
+
+  const { minX, maxX, minZ, maxZ } = PARK;
+  const cx = (minX + maxX) / 2;
+  const cz = (minZ + maxZ) / 2;
+
+  const lawn = new THREE.Mesh(new THREE.PlaneGeometry(maxX - minX, maxZ - minZ), material(C.grass));
+  lawn.rotation.x = -Math.PI / 2;
+  lawn.position.set(cx, 0.025, cz);
+  lawn.receiveShadow = true;
+  g.add(lawn);
+
+  // Pond against the south edge, ringed with wet sand.
+  const pondX = minX + 18;
+  const pondZ = maxZ - 17;
+  disc(g, 10.8, 0xd8cdb2, pondX, 0.05, pondZ);
+  disc(g, 10, C.water, pondX, 0.07, pondZ, { glassy: true });
+
+  for (let i = 0; i < 8; i++) {
+    const px = minX + 10 + (i % 3) * 20 + rng.range(-2, 2);
+    const pz = minZ + 10 + Math.floor(i / 4) * 44 + rng.range(-3, 3);
+    palm(g, px, pz, rng.range(6, 10), rng.range(0.9, 1.15));
+  }
+
+  // Benches face the lawn from its north-west side, away from the pond.
+  bench(g, cx - 6, cz - 4, 0);
+  bench(g, cx + 4, cz + 16, Math.PI);
+  bench(g, cx + 14, cz + 6, Math.PI / 2);
+
+  // The crate: one rifle, waiting where the palms shade the north lawn.
+  const crateX = cx - 24;
+  const crateZ = cz - 20;
+  const crate = new THREE.Group();
+  slab(crate, 1.6, 1.1, 1.6, 0x8a6a3f, 0, 0.55, 0);
+  slab(crate, 1.7, 0.16, 1.7, 0x6f5330, 0, 1.12, 0);
+  slab(crate, 0.9, 0.06, 0.9, C.beacon, 0, 1.22, 0);
+  crate.position.set(crateX, 0, crateZ);
+  g.add(crate);
+  addCollider(W, crateX, crateZ, 1.7, 1.7, 1.3);
+
+  city.park = { minX, maxX, minZ, maxZ, x: cx, z: cz };
   city.pickup = { x: crateX, z: crateZ, rifle: true };
 }
 
-function raise(W, city, x, z, w, d, h, hex, glassy) {
-  W.scene.add(block(x, z, w, d, h, h / 2 + 0.1, material(hex, { glassy })));
-  W.scene.add(block(x, z, w + 0.6, d + 0.6, 0.6, h + 0.4, material(glassy ? C.steel[1] : C.roof)));
-  if (glassy) {
-    W.scene.add(block(x, z, w * 0.62, d * 0.62, 1.6, h + 1.3, material(C.steel[0])));
-    if (h > 52) W.scene.add(block(x, z, 0.3, 0.3, 8, h + 5.6, material(C.steel[1])));
-  } else if (h > 15) {
-    const tank = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.4, 2.2, 8), material(0x6b6257));
-    tank.position.set(x + w * 0.24, h + 1.7, z - d * 0.2);
-    tank.castShadow = true;
-    W.scene.add(tank);
+// ---------- promenade and waterfront ----------
+
+function buildPromenade(W, rng, city) {
+  const g = new THREE.Group();
+  g.name = 'promenade';
+  W.scene.add(g);
+
+  const x = CONFIG.world.sea + 9;
+  for (let i = 0; i < 10; i++) {
+    palm(g, x, -150 + i * 33 + rng.range(-3, 3), rng.range(8, 13), rng.range(1, 1.25));
   }
-  addCollider(W, x, z, w, d, h);
-  city.buildings.push({ x, z, w, d, h, color: hex });
+  for (let i = 0; i < 5; i++) {
+    bench(g, x + 6, -120 + i * 60, -Math.PI / 2);
+  }
+  city.promenade = { x, minZ: -165, maxZ: 165 };
 }
 
-// A footprint inside a lot, snapped to whole metres and kept whole within it.
-function seat(lot, w, d, rng) {
-  const lowX = lot.x0 + 2 + w / 2;
-  const highX = Math.max(lowX, lot.x1 - 2 - w / 2);
-  const lowZ = lot.z0 + 2 + d / 2;
-  const highZ = Math.max(lowZ, lot.z1 - 2 - d / 2);
-  return {
-    x: Math.round(lowX + rng.range(0, highX - lowX)),
-    z: Math.round(lowZ + rng.range(0, highZ - lowZ)),
+/** Posts and rail along the sea wall so the water edge never reads as a seam. */
+function buildSeawall(W) {
+  const rail = new THREE.Group();
+  rail.name = 'seawall';
+  const x = CONFIG.world.sea + 2;
+  for (let i = 0; i < 22; i++) {
+    const post = box(0.3, 1.0, 0.3, 0xf2e6cc);
+    post.position.set(x, 0.5, -154 + i * 14);
+    rail.add(post);
+    const arm = box(0.16, 0.16, 14, 0xe9dcc4);
+    arm.position.set(x, 0.9, -147 + i * 14);
+    rail.add(arm);
+  }
+  W.scene.add(rail);
+}
+
+// ---------- named venues ----------
+
+/** Pool-blue awning and three posts over the garage door. */
+function dressGarage(g, go) {
+  slab(g, go.w, 0.5, 2.2, 0x2f6bff, go.x, 3.6, go.z - go.d / 2 - 1.0);
+  for (let i = 0; i < 3; i++) slab(g, 0.5, 4.4, 0.5, 0x7d8a95, 28 + i * 0.9, 2.2, -48 - i * 0.4);
+}
+
+/** Two shopfront kiosks with their own awnings, inside the mart pad. */
+function dressMart(g) {
+  for (const [x, z] of [[32, 32], [48, 48]]) {
+    slab(g, 16, 2.2, 6, 0xf2e6cc, x, 1.1, z);
+    slab(g, 12, 0.14, 8.4, 0x4f7a5e, x, 2.4, z);
+  }
+}
+
+function buildVenues(W, city) {
+  const g = new THREE.Group();
+  g.name = 'venues';
+  W.scene.add(g);
+
+  // GLASS ORCHID: the garage where Vesper hands out work, north-east block.
+  const go = padBase(g, 40, -40, 26, 12, 0xdfd5c2, 0x2f6bff);
+  dressGarage(g, go);
+
+  // VINE MART: the shop block, south-east of centre.
+  const vm = padBase(g, 40, 40, 34, 10, 0xe8dfcc, 0x4f7a5e);
+  dressMart(g);
+
+  // CEDAR VIEW: hospital pad on the waterfront edge, z ~ 150, white cross on top.
+  const cv = padBase(g, -150, 148, 22, 16, 0xe9f0ec, 0x2f9f7a);
+  slab(g, 6, 6, 6, 0xf4f7f5, -158, 3, 152);
+  slab(g, 3.4, 0.9, 0.7, 0x2f9f7a, -158, 4.4, 148.6);
+  slab(g, 0.9, 3.4, 0.7, 0x2f9f7a, -158, 4.4, 148.6);
+
+  // SABLE ROW: police station pad, x ~ -150, z ~ 100.
+  const sr = padBase(g, -130, 100, 24, 14, 0xd9dde2, 0x2b3b55);
+  slab(g, 4, 3.2, 4, 0xc9ced4, -138, 1.6, 104);
+  slab(g, 2.4, 0.7, 0.5, C.barBlue, -138, 2.6, 101.6);
+
+  // Taxi stand near the centre, on the promenade side of the middle.
+  const ts = padBase(g, -40, 12, 16, 8, 0xf5e6b8, C.taxi);
+  slab(g, 1.2, 3.2, 0.4, C.taxi, -40, 1.6, 16);
+
+  city.markers = {
+    glassOrchid: { x: go.x, z: go.z },
+    vineMart: { x: vm.x, z: vm.z },
+    hospital: { x: cv.x, z: cv.z },
+    station: { x: sr.x, z: sr.z },
+    taxiStand: { x: ts.x, z: ts.z },
   };
 }
 
-function free(city, x, z, w, d, pad) {
-  for (const b of city.buildings) {
-    if (Math.abs(x - b.x) < (w + b.w) / 2 + pad && Math.abs(z - b.z) < (d + b.d) / 2 + pad) return false;
-  }
-  const PK = city.park;
-  if (x + w / 2 + pad > PK.x0 && x - w / 2 - pad < PK.x1 && z + d / 2 + pad > PK.z0 && z - d / 2 - pad < PK.z1) return false;
-  return true;
+/** A soft gold column over the garage door so the mission giver reads from afar. */
+function buildBeacon(W, city) {
+  const m = city.markers.glassOrchid;
+  const beacon = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.6, 1.6, 26, 12, 1, true),
+    new THREE.MeshBasicMaterial({ color: C.marker, transparent: true, opacity: 0.28, side: THREE.DoubleSide }),
+  );
+  beacon.position.set(m.x, 13, m.z);
+  W.scene.add(beacon);
+  city.beacon = beacon;
 }
 
-// Lays out one block: tries a few sizes, keeps the first that clears the rest.
-function fillLot(W, city, lot, meridian, rng) {
+// ---------- spawns ----------
 
-  const room = Math.min(lot.x1 - lot.x0, lot.z1 - lot.z0);
-  if (room < 12) return false;
-  const widest = Math.max(10, Math.min(26, lot.x1 - lot.x0 - 4));
-  const deepest = Math.max(10, Math.min(26, lot.z1 - lot.z0 - 4));
-  for (let tries = 0; tries < 6; tries++) {
-    const w = Math.round(rng.range(Math.min(widest, meridian ? 15 : 14), widest));
-    const d = Math.round(rng.range(Math.min(deepest, 13), deepest));
-    const spot = seat(lot, w, d, rng);
-    if (!free(city, spot.x, spot.z, w, d, 1.5)) continue;
-    const h = meridian ? Math.round(rng.range(30, 90)) : Math.round(rng.range(8, 24));
-    raise(W, city, spot.x, spot.z, w, d, h, rng.pick(meridian ? C.glass : C.stucco), meridian);
-    return true;
-  }
-  return false;
+function buildSpawns(city) {
+  city.spawns = {
+    playerStart: { x: -18, z: 20 },
+    carParks: [
+      { x: 30, z: -22, heading: 0, kind: 'sport', color: C.sport, mission1: true, label: 'm1car' },
+      { x: 52, z: -18, heading: 0, kind: 'sport', color: 0x2f6bff },
+      { x: 88, z: 30, heading: Math.PI / 2, kind: 'sedan', color: C.sedan },
+      { x: -40, z: 96, heading: -Math.PI / 2, kind: 'sedan', color: 0xd7d0c2 },
+      { x: -44, z: 20, heading: Math.PI / 2, kind: 'taxi', color: C.taxi },
+      { x: 8, z: -118, heading: Math.PI, kind: 'sport', color: C.sport },
+    ],
+  };
 }
 
-function blocks(W, city, rng) {
-  // Tall anchors first, so Meridian keeps its skyline even when lots are tight.
-  const anchors = [
-    { x: 16, z: -66, w: 22, d: 20, h: 88 },
-    { x: 62, z: -70, w: 20, d: 18, h: 64 },
-    { x: 10, z: 26, w: 18, d: 20, h: 52 },
-    { x: 66, z: 62, w: 18, d: 18, h: 72 },
-    { x: -70, z: 64, w: 20, d: 20, h: 22 },
-    { x: -144, z: 140, w: 22, d: 18, h: 18 },
-  ];
-  for (const a of anchors) {
-    if (free(city, a.x, a.z, a.w, a.d, 1.5)) {
-      raise(W, city, a.x, a.z, a.w, a.d, a.h, rng.pick(a.x >= 0 ? C.glass : C.stucco), a.x >= 0);
-    }
-  }
-
-  for (let iz = 0; iz < 4; iz++) {
-    for (let ix = 0; ix < 4; ix++) {
-      if (ix === PARK_BLOCK.ix && iz === PARK_BLOCK.iz) continue;
-      if (ix === ORCHID_BLOCK.ix && iz === ORCHID_BLOCK.iz) continue;
-      const lot = rect(ix, iz);
-      const meridian = lot.x0 >= 0;
-      const count = rng.int(2, 3);
-      const width = (lot.x1 - lot.x0) / count;
-      for (let i = 0; i < count; i++) {
-        const slot = { x0: lot.x0 + i * width, x1: lot.x0 + (i + 1) * width, z0: lot.z0, z1: lot.z1 };
-        fillLot(W, city, slot, meridian, rng);
-      }
-    }
-  }
+/** Positions are authored on an 80 m grid; scale them once to whatever pitch is live. */
+function snapToGrid(city) {
+  const k = CONFIG.world.pitch / 80;
+  const lift = (p) => {
+    p.x = Math.round(p.x * k);
+    p.z = Math.round(p.z * k);
+  };
+  for (const key of Object.keys(city.markers)) lift(city.markers[key]);
+  lift(city.spawns.playerStart);
+  for (const spot of city.spawns.carParks) lift(spot);
 }
 
-// Ground reserved for a named place: nothing gets built on it later.
-function reserve(city, x, z, w, d, colour) {
-  city.reserved.push({ x, z, w, d });
-  city.buildings.push({ x, z, w, d, h: 0, color: colour, pad: true });
-}
+// ---------- export ----------
 
-function pads(W, city) {
-  // Meridian block x[0,80] z[-80,0]: the Glass Orchid garage fills its east half.
-  const gar = { x0: 40, x1: 56, z0: -18, z1: -4 };
-  const gx = (gar.x0 + gar.x1) / 2;
-  const gz = (gar.z0 + gar.z1) / 2;
-  W.scene.add(flat(gar.x0, gar.z0, gar.x1, gar.z1, 0.09, material(0x8fd8b0)));
-  for (const side of [-1, 1]) {
-    W.scene.add(block(gx + side * 7.6, gz, 0.6, gar.z1 - gar.z0, 5.4, 2.7, material(0xe7f5ec)));
-    addCollider(W, gx + side * 7.6, gz, 0.6, gar.z1 - gar.z0, 5.4);
-  }
-  W.scene.add(block(gx, gz, 16.2, gar.z1 - gar.z0, 0.9, 5.6, material(0x8fd8b0)));
-  reserve(city, gx, gz, gar.x1 - gar.x0, gar.z1 - gar.z0, 0x8fd8b0);
-  city.places.glassOrchid = { x: gx, z: gz };
-  city.markers.glassOrchid = { x: gx, z: gz, label: 'Glass Orchid' };
-
-  // Vine Mart block x[0,80] z[0,80]: shop pad on the corner by the avenue.
-  const mart = { x0: 10, x1: 26, z0: 12, z1: 20 };
-  const mx = (mart.x0 + mart.x1) / 2;
-  const mz = (mart.z0 + mart.z1) / 2;
-  W.scene.add(flat(mart.x0, mart.z0, mart.x1, mart.z1, 0.09, material(0x74e2b6)));
-  W.scene.add(block(mx, mart.z0 + 0.7, 13, 1.4, 0.3, 3.1, material(C.frond)));
-  reserve(city, mx, mz, mart.x1 - mart.x0, mart.z1 - mart.z0, 0x74e2b6);
-  city.places.vineMart = { x: mx, z: mz };
-  city.markers.vineMart = { x: mx, z: mz, label: 'Vine Mart' };
-
-  // Taxi stand: the kerb bay on the Meridian avenue, just south of the Vine Mart.
-  const tx = 22;
-  const tz = 34;
-  W.scene.add(flat(tx - 6, tz - 4, tx + 6, tz + 4, 0.09, material(C.taxi)));
-  W.scene.add(block(tx, tz - 4.7, 10, 1.2, 0.3, 2.9, material(C.taxi)));
-  reserve(city, tx, tz, 12, 8, C.taxi);
-  city.places.taxiStand = { x: tx, z: tz };
-  city.markers.taxiStand = { x: tx, z: tz, label: 'Taxi stand' };
-}
-
-// Cedar View sits on the waterfront strip; Sable Row takes the north-west lot.
-function landmarkPads(W, city) {
-  const hx = SEA + 16;
-  const hz = 150;
-  W.scene.add(flat(hx - 13, hz - 9, hx + 13, hz + 9, 0.09, material(0xf2f6f9)));
-  raise(W, city, hx, hz - 11, 24, 9, 17, 0xf2f6f9, false);
-  city.places.hospital = { x: hx, z: hz };
-  city.markers.hospital = { x: hx, z: hz, label: 'Cedar View' };
-
-  const sx = -150;
-  const sz = 100;
-  W.scene.add(flat(sx - 9, sz - 7, sx + 9, sz + 7, 0.09, material(0xc7ced6)));
-  raise(W, city, sx, sz - 11, 18, 10, 12, C.copbody, false);
-  W.scene.add(block(sx, sz - 11, 18.3, 10.3, 1.2, 4.4, material(C.coptrim)));
-  city.places.station = { x: sx, z: sz };
-  city.markers.station = { x: sx, z: sz, label: 'Sable Row' };
-}
-
-function promenade(W, city) {
-  // Tiled decks only at the z rows clear of the -160 road, palms beside them.
-  const decks = [];
-  const lamps = [];
-  for (let i = 0; i < 8; i++) {
-    const z = -150 + i * 42;
-    const clearOfRoad = Math.abs(z + 80) > 10 && Math.abs(z) > 10 && Math.abs(z - 80) > 10;
-    if (clearOfRoad) {
-      W.scene.add(flat(SEA + 0.6, z - 9, SEA + 12, z + 9, 0.05, material(0xe8e0cf)));
-      decks.push({ x: SEA + 10, y: 1.1, z });
-    }
-    lamps.push({ x: SEA + 3, y: 2.4, z });
-    if (clearOfRoad) W.scene.add(palm(SEA + 6, z + 14, 1.15));
-  }
-  crowd(W, decks, 0.34, 2.2, 0.34, 0xcfc6b8);
-  crowd(W, lamps, 0.22, 4.8, 0.22, 0x8a949c);
-  city.promenade = { x0: -LAND, x1: SEA, z0: -LAND, z1: LAND };
-}
-
-function clear(W, city, x, z, pad) {
-  for (const b of city.buildings) {
-    if (b.h === 0) continue;
-    if (Math.abs(x - b.x) < b.w / 2 + pad && Math.abs(z - b.z) < b.d / 2 + pad) return false;
-  }
-  return !inPark(x, z, pad);
-}
-
-function carParks(W, city) {
-  const wanted = [
-    { x: -20, z: -12, kind: 'sport', color: C.sport },
-    { x: -28, z: -22, kind: 'sport', color: 0x4a8fd4 },
-    { x: -38, z: -12, kind: 'sedan', color: C.sedan },
-    { x: -44, z: -22, kind: 'sedan', color: 0xc8d4dc },
-    { x: -56, z: -12, kind: 'taxi', color: C.taxi },
-    { x: -60, z: -22, kind: 'sport', color: 0xe88f6f, tag: 'm1car' },
-  ];
-  for (const spot of wanted) {
-    let place = { x: spot.x, z: spot.z };
-    const open = (px, pz) => clear(W, city, px, pz, 3)
-      && !city.spawns.carParks.some((c) => Math.abs(c.x - px) < 5 && Math.abs(c.z - pz) < 5);
-    if (!open(place.x, place.z)) {
-      search: for (let ring = 6; ring < 70; ring += 6) {
-        for (let a = 0; a < 8; a++) {
-          const px = spot.x + Math.cos(a * 0.785) * ring;
-          const pz = spot.z + Math.sin(a * 0.785) * ring;
-          if (!inPark(px, pz, 3) && open(px, pz)) { place = { x: px, z: pz }; break search; }
-        }
-      }
-    }
-    const entry = { x: place.x, z: place.z, kind: spot.kind, color: spot.color, heading: -Math.PI / 2 };
-    if (spot.tag) entry.tag = spot.tag;
-    city.spawns.carParks.push(entry);
-    // Painted kerb bay, long axis along the avenue the car faces.
-    W.scene.add(flat(place.x - 1.3, place.z - 3.2, place.x + 1.3, place.z + 3.2, 0.08, material(0xb9b2a4)));
-  }
-}
-
+/** Build every static piece of Solara Bay and return the city handle. */
 export function buildCity(W, rng) {
   const city = {
     buildings: [],
-    reserved: [],
-    places: {},
-    markers: {},
-    pickup: null,
     park: null,
-    promenade: null,
-    spawns: { carParks: [] },
+    markers: {},
+    spawns: null,
+    pickup: null,
+    lots: {},
   };
 
-  layPark(W, city, rng);
-  pads(W, city);
-  landmarkPads(W, city);
-  blocks(W, city, rng);
-  promenade(W, city);
+  buildBlocks(W, rng, city);
+  buildPark(W, rng, city);
+  buildPromenade(W, rng, city);
+  buildVenues(W, city);
+  buildSpawns(city);
+  snapToGrid(city);
+  buildSeawall(W);
+  buildBeacon(W, city);
 
-  const lamps = [];
-  for (let i = 0; i < 4; i++) {
-    for (let j = 0; j < 4; j++) {
-      lamps.push({ x: LINES[i] + 10 + j * 19, y: 3.1, z: LINES[i] + 3.2 });
-    }
-  }
-  crowd(W, lamps, 0.22, 4.8, 0.22, 0x8a949c);
-
-  carParks(W, city);
-
-  city.spawns.playerStart = { x: -40, z: -8 };
-  city.districtOf = (x) => (x >= 0 ? 'Meridian' : 'Palm Ward');
   return city;
 }
 
+/** Which building, if any, hides this point. Cover checks and minimap hits use it. */
 export function buildingAt(city, x, z) {
-  for (let i = 0; i < city.buildings.length; i++) {
-    const b = city.buildings[i];
+  const list = city.buildings;
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i];
     if (Math.abs(x - b.x) <= b.w / 2 && Math.abs(z - b.z) <= b.d / 2) return b;
   }
   return null;

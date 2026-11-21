@@ -1,277 +1,253 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Solara Bay</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOLARA BAY</title>
 <style>
   :root {
-    --panel: rgba(14, 26, 38, 0.72);
-    --panel-line: rgba(255, 255, 255, 0.16);
-    --ink: #f6fbff;
-    --dim: #b7cad8;
-    --sun: #ffd24a;
-    --coral: #ff8a70;
-    --mint: #74e2b6;
-    --sky: #8fd0ff;
+    --ink: #f7fbff;
+    --panel: rgba(16, 24, 33, 0.62);
+    --panel-solid: rgba(16, 24, 33, 0.88);
+    --edge: rgba(255, 255, 255, 0.18);
+    --gold: #ffd24a;
+    --coral: #ff8a6b;
+    --mint: #7be0c0;
+    --sky: #8fd3ff;
+    --lilac: #c8b6ff;
+    --red: #ff5a4d;
   }
   * { box-sizing: border-box; }
   html, body {
-    margin: 0; padding: 0; width: 100%; height: 100%;
-    overflow: hidden; background: #bfe3ff; color: var(--ink);
+    margin: 0; height: 100%; overflow: hidden;
+    background: #9fd6f2; color: var(--ink);
     font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
-    -webkit-font-smoothing: antialiased;
+    user-select: none; -webkit-user-select: none;
   }
-  #app, #app canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  #app canvas { outline: none; }
-
-  #hud { position: fixed; inset: 0; pointer-events: none; user-select: none; }
-  #hud.hidden { display: none; }
-
+  #app { position: absolute; inset: 0; }
+  #app canvas { display: block; width: 100%; height: 100%; }
+  #hud { position: absolute; inset: 0; pointer-events: none; }
+  #hud.damage::after {
+    content: ""; position: absolute; inset: 0;
+    box-shadow: inset 0 0 120px 30px rgba(255, 60, 48, 0.55);
+    transition: opacity 0.1s linear;
+  }
   .panel {
-    background: var(--panel);
-    border: 1px solid var(--panel-line);
-    border-radius: 12px;
-    backdrop-filter: blur(6px);
-    box-shadow: 0 6px 22px rgba(8, 20, 32, 0.28);
+    background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 10px; backdrop-filter: blur(3px);
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28);
+    padding: 8px 12px;
   }
-
-  #top-left { position: absolute; top: 16px; left: 16px; display: flex; flex-direction: column; gap: 8px; }
-  #stars { display: flex; gap: 4px; font-size: 26px; line-height: 1; letter-spacing: 2px; color: rgba(255,255,255,0.22); }
-  #stars .on { color: var(--sun); text-shadow: 0 0 10px rgba(255, 210, 74, 0.75); }
+  #topbar {
+    position: absolute; top: 14px; left: 14px;
+    display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  }
+  #money-row { display: flex; align-items: center; gap: 10px; }
+  #money {
+    font: 700 26px/1 "Trebuchet MS", sans-serif;
+    color: var(--mint); letter-spacing: 0.5px;
+    text-shadow: 0 2px 0 rgba(0, 0, 0, 0.4);
+  }
+  #stars { font-size: 22px; letter-spacing: 3px; color: rgba(255, 255, 255, 0.25); }
+  #stars i { font-style: normal; }
+  #stars i.on { color: var(--gold); text-shadow: 0 0 10px rgba(255, 210, 74, 0.85); }
   #stars.pulse { animation: starPulse 0.45s ease-out; }
-  @keyframes starPulse { 0% { transform: scale(1.28); } 100% { transform: scale(1); } }
-
-  #money { font-size: 30px; font-weight: 700; color: var(--mint); text-shadow: 0 2px 8px rgba(6, 24, 18, 0.55); }
-
-  #bars { display: flex; flex-direction: column; gap: 6px; width: 208px; }
-  .bar { height: 12px; border-radius: 7px; background: rgba(6, 16, 26, 0.62); border: 1px solid var(--panel-line); overflow: hidden; }
-  .bar i { display: block; height: 100%; width: 100%; transition: width 0.18s linear; }
-  #healthbar i { background: linear-gradient(90deg, #ff6b5e, #ff9f6e); }
-  #armorbar i { background: linear-gradient(90deg, #6fc6ff, #9de8ff); }
-
-  #bottom-left { position: absolute; left: 16px; bottom: 16px; display: flex; gap: 10px; align-items: flex-end; }
+  @keyframes starPulse { 0% { transform: scale(1.35); } 100% { transform: scale(1); } }
+  #bars { display: flex; flex-direction: column; gap: 6px; width: 210px; }
+  .bar { height: 11px; border-radius: 6px; background: rgba(0, 0, 0, 0.45); overflow: hidden; border: 1px solid var(--edge); }
+  .bar > i { display: block; height: 100%; width: 100%; transition: width 0.18s linear; }
+  #healthbar > i { background: linear-gradient(90deg, #ff6b5b, #ffb27a); }
+  #armorbar > i { background: linear-gradient(90deg, #5ea9ff, #a8e0ff); }
   #weapon {
-    padding: 9px 14px; font-size: 15px; letter-spacing: 1px; text-transform: uppercase;
-    color: var(--ink); border-left: 3px solid var(--coral);
+    position: absolute; bottom: 18px; left: 16px;
+    font: 600 15px/1.2 "Trebuchet MS", sans-serif; color: var(--ink);
+    padding: 7px 12px; min-width: 128px;
   }
+  #weapon b { color: var(--lilac); }
   #speed {
-    padding: 9px 14px; font-size: 22px; font-weight: 700; color: var(--sky); min-width: 108px; text-align: right;
+    position: absolute; bottom: 18px; left: 160px;
+    font: 700 15px/1.2 "Trebuchet MS", sans-serif; padding: 7px 12px;
+    color: var(--sky); display: none;
   }
-  #speed small { font-size: 12px; color: var(--dim); margin-left: 4px; font-weight: 400; }
-
-  #top-right { position: absolute; top: 16px; right: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
-  #minimap {
-    width: 180px; height: 180px; border-radius: 12px; display: block;
-    border: 2px solid rgba(255,255,255,0.5); background: rgba(10, 24, 34, 0.72);
-    box-shadow: 0 8px 22px rgba(8, 20, 32, 0.35);
-  }
-  #timer { padding: 6px 12px; font-size: 17px; font-weight: 700; color: var(--sun); min-height: 0; }
-  #timer:empty { display: none; }
-
   #objective {
-    position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%);
-    max-width: 62%; padding: 10px 18px; text-align: center;
-    font-size: 16px; letter-spacing: 0.4px; color: var(--ink);
-    border-left: 3px solid var(--sun);
+    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    padding: 8px 16px; font: 600 15px/1.35 "Trebuchet MS", sans-serif;
+    max-width: 520px; text-align: center; display: none;
   }
-  #objective:empty { display: none; }
-
-  #toasts { position: absolute; left: 50%; top: 96px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; align-items: center; }
-  .toast {
-    padding: 8px 16px; border-radius: 9px; font-size: 15px; font-weight: 600;
-    background: rgba(14, 26, 38, 0.82); border: 1px solid var(--panel-line);
-    transition: opacity 0.5s ease, transform 0.5s ease;
+  #objective b { color: var(--gold); }
+  #timer {
+    font: 700 16px/1 "Trebuchet MS", sans-serif; color: var(--coral);
+    margin-left: 8px;
   }
-  .toast.out { opacity: 0; transform: translateY(-8px); }
-
+  #minimap {
+    position: absolute; top: 14px; right: 14px;
+    width: 180px; height: 180px; border-radius: 8px;
+    border: 2px solid rgba(255, 255, 255, 0.55);
+    background: #1a2632; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  }
+  #toasts {
+    position: absolute; top: 210px; right: 18px; width: 260px;
+    display: flex; flex-direction: column; gap: 6px; align-items: flex-end;
+  }
+  #toasts .toast {
+    font: 600 14px/1.3 "Trebuchet MS", sans-serif;
+    padding: 6px 11px; border-radius: 8px;
+    background: var(--panel-solid); border-left: 4px solid var(--gold);
+    opacity: 0; transition: opacity 0.35s ease;
+  }
+  #toasts .toast.show { opacity: 1; }
   #crosshair {
-    position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px;
-    border-radius: 50%; background: rgba(255, 255, 255, 0.9);
-    box-shadow: 0 0 0 2px rgba(10, 26, 38, 0.55); display: none;
+    position: absolute; left: 50%; top: 50%; width: 6px; height: 6px;
+    margin: -3px 0 0 -3px; border-radius: 50%; background: #fff;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); display: none;
   }
-  #hud.playing #crosshair { display: block; }
-
-  #hud.hurt::after {
-    content: ""; position: absolute; inset: 0; pointer-events: none;
-    box-shadow: inset 0 0 140px 30px rgba(220, 40, 30, 0.75);
+  .screen {
+    position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    background: radial-gradient(circle at 50% 35%, rgba(20, 36, 48, 0.25), rgba(10, 18, 26, 0.82));
+    pointer-events: auto;
   }
-
-  .overlay {
-    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-    background: radial-gradient(circle at 50% 35%, rgba(12, 30, 44, 0.28), rgba(6, 16, 26, 0.78));
-    pointer-events: auto; z-index: 20;
-  }
-  .overlay.panel { border: none; border-radius: 0; }
-  .overlay.hidden { display: none; }
-
+  .screen.open { display: flex; }
   .card {
-    width: min(560px, 88vw); padding: 30px 34px 26px;
-    background: var(--panel); border: 1px solid var(--panel-line); border-radius: 16px;
-    box-shadow: 0 18px 50px rgba(6, 16, 26, 0.5); text-align: center;
+    background: var(--panel-solid); border: 1px solid var(--edge);
+    border-radius: 14px; padding: 30px 38px; max-width: 660px;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5); text-align: center;
   }
-  .card h2 { margin: 0 0 8px; font-size: 30px; letter-spacing: 1px; }
-  .card p { margin: 6px 0; color: var(--dim); font-size: 15px; line-height: 1.5; }
-  .card .story { color: #ffe8c2; font-style: italic; }
-
-  #title { background: linear-gradient(160deg, rgba(191, 227, 255, 0.35), rgba(12, 30, 44, 0.82) 55%); }
-  #title .card { width: min(720px, 92vw); text-align: left; }
-  .brand {
-    font-size: clamp(48px, 9vw, 96px); line-height: 0.92; font-weight: 800; letter-spacing: 6px;
-    margin: 0 0 10px; color: #fff;
-    text-shadow: 0 4px 0 rgba(255, 138, 112, 0.85), 0 14px 40px rgba(6, 20, 34, 0.55);
+  .card h1 {
+    margin: 0 0 6px; font: 800 64px/1 "Trebuchet MS", sans-serif;
+    letter-spacing: 6px; color: var(--gold);
+    text-shadow: 0 4px 0 #b06a2b, 0 10px 26px rgba(0, 0, 0, 0.55);
   }
-  .tagline { font-size: 20px; color: var(--sun); letter-spacing: 0.5px; margin: 0 0 18px; }
-  .controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 22px; margin: 14px 0 20px; }
-  .controls span { font-size: 14px; color: var(--dim); }
-  .controls b { color: var(--ink); display: inline-block; min-width: 62px; }
-  .buttons { display: flex; gap: 12px; flex-wrap: wrap; }
+  .card h2 { margin: 0 0 16px; font: 500 20px/1.3 "Trebuchet MS", sans-serif; color: var(--mint); }
+  .card h3 { margin: 0 0 10px; font: 700 26px/1.2 "Trebuchet MS", sans-serif; color: var(--coral); }
+  .card p { margin: 0 0 12px; font: 15px/1.5 "Trebuchet MS", sans-serif; color: #d6e4ef; }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; text-align: left; margin: 16px auto; max-width: 420px; font: 14px/1.4 "Trebuchet MS", sans-serif; }
+  .keys span:nth-child(odd) { color: var(--sky); font-weight: 700; text-align: right; }
+  .row { display: flex; gap: 12px; justify-content: center; margin-top: 18px; }
   button {
-    pointer-events: auto; cursor: pointer; font: inherit; font-size: 16px; font-weight: 700;
-    padding: 11px 22px; border-radius: 10px; border: 1px solid var(--panel-line);
-    background: rgba(255, 255, 255, 0.12); color: var(--ink); letter-spacing: 0.6px;
+    font: 700 16px/1 "Trebuchet MS", sans-serif; letter-spacing: 1px;
+    padding: 12px 22px; border-radius: 9px; cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: linear-gradient(180deg, #ffd77a, #f0a640); color: #241a08;
+    pointer-events: auto;
   }
-  button:hover { background: rgba(255, 255, 255, 0.22); }
-  button.primary { background: var(--sun); color: #2a2008; border-color: rgba(0,0,0,0.2); }
-  button.primary:hover { background: #ffdf7a; }
-  button.hidden { display: none; }
-  .footer { margin-top: 16px; font-size: 12px; color: rgba(183, 202, 216, 0.75); letter-spacing: 1px; }
-
-  #shop .card, #pause .card, #complete .card, #busted .card, #wasted .card { width: min(480px, 86vw); }
-  .shop-list { display: flex; flex-direction: column; gap: 8px; margin: 16px 0 18px; }
-  .shop-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .shop-row span { font-size: 15px; }
-  .shop-row b { color: var(--mint); }
-  #shop-status { min-height: 20px; font-size: 13px; color: var(--coral); }
-  .stat-line { font-size: 15px; color: var(--dim); margin: 10px 0; }
-  .stat-line b { color: var(--ink); }
-  #busted h2 { color: #ff8a70; }
-  #wasted h2 { color: #ff6b5e; }
-  #complete h2 { color: var(--mint); }
+  button:hover { filter: brightness(1.08); }
+  button.ghost { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
+  .foot { margin-top: 18px; font: 12px/1.4 "Trebuchet MS", sans-serif; color: rgba(214, 228, 239, 0.65); letter-spacing: 2px; }
+  .shopitem { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 8px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.12); text-align: left; }
+  .shopitem b { color: var(--gold); }
+  #error { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; padding: 40px; font: 16px/1.5 monospace; color: #ffe3e3; background: #241417; white-space: pre-wrap; }
 </style>
 </head>
 <body>
-  <div id="app"></div>
+<div id="app"></div>
 
-  <div id="hud" class="hidden">
-    <div id="top-left">
-      <div id="stars"></div>
+<div id="hud">
+  <div id="topbar">
+    <div class="panel" id="money-row">
       <div id="money">$0</div>
-      <div id="bars">
-        <div class="bar" id="healthbar"><i></i></div>
-        <div class="bar" id="armorbar"><i></i></div>
-      </div>
+      <div id="stars"><i>★</i><i>★</i><i>★</i><i>★</i><i>★</i></div>
     </div>
-
-    <div id="top-right">
-      <canvas id="minimap" width="180" height="180"></canvas>
-      <div id="timer" class="panel"></div>
-    </div>
-
-    <div id="bottom-left">
-      <div id="weapon" class="panel">Pistol</div>
-      <div id="speed" class="panel"></div>
-    </div>
-
-    <div id="objective" class="panel"></div>
-    <div id="toasts"></div>
-    <div id="crosshair"></div>
-  </div>
-
-  <div id="title" class="overlay panel">
-    <div class="card">
-      <h1 class="brand">SOLARA BAY</h1>
-      <p class="tagline">Sun, chrome, and one last job.</p>
-      <p>Vesper needs a driver who does not ask questions. The bay has three jobs, a shop, a rifle in the park and a lot of police.</p>
-      <div class="controls">
-        <span><b>WASD</b> move / drive</span>
-        <span><b>Mouse</b> look</span>
-        <span><b>Shift</b> sprint</span>
-        <span><b>E</b> enter / steal car</span>
-        <span><b>F</b> fire</span>
-        <span><b>T</b> taxi fares</span>
-        <span><b>R</b> retry mission</span>
-        <span><b>Escape</b> pause</span>
-      </div>
-      <div class="buttons">
-        <button id="btn-continue" class="hidden">Continue</button>
-        <button id="btn-new" class="primary">New Game</button>
-      </div>
-      <div class="footer">v is for Vesper</div>
+    <div id="bars">
+      <div class="bar" id="healthbar"><i></i></div>
+      <div class="bar" id="armorbar"><i></i></div>
     </div>
   </div>
+  <div id="objective" class="panel"><span id="timer"></span></div>
+  <canvas id="minimap" width="180" height="180"></canvas>
+  <div id="toasts"></div>
+  <div id="weapon" class="panel"><b>Pistol</b> ∞</div>
+  <div id="speed" class="panel">0 km/h</div>
+  <div id="crosshair"></div>
+</div>
 
-  <div id="pause" class="overlay panel hidden">
-    <div class="card">
-      <h2>Paused</h2>
-      <p>WASD move / drive &middot; Mouse look &middot; Shift sprint &middot; E car &middot; F fire &middot; T fares &middot; Escape resume</p>
-      <p id="pause-status" class="stat-line">Progress saves automatically.</p>
-      <div class="buttons" style="justify-content:center">
-        <button id="btn-resume" class="primary">Resume</button>
-        <button id="btn-shop">Shop</button>
-        <button id="btn-title">Title Screen</button>
-      </div>
+<div id="title" class="screen open">
+  <div class="card">
+    <h1>SOLARA BAY</h1>
+    <h2>Sun, chrome, and one last job.</h2>
+    <p>Palm trees, glass towers and a harbour that never asks where the money came from. Work for Vesper, keep the police off your back, and stay out of the water.</p>
+    <div class="keys">
+      <span>W A S D</span><span>Move on foot / drive</span>
+      <span>Mouse</span><span>Look around</span>
+      <span>Shift</span><span>Sprint</span>
+      <span>E</span><span>Enter or leave a car</span>
+      <span>F</span><span>Fire</span>
+      <span>T</span><span>Taxi fares (in a taxi)</span>
+      <span>Escape</span><span>Pause</span>
+    </div>
+    <div class="row">
+      <button id="btn-continue" style="display:none">CONTINUE</button>
+      <button id="btn-new">NEW GAME</button>
+    </div>
+    <div class="foot">v is for Vesper</div>
+  </div>
+</div>
+
+<div id="pause" class="screen">
+  <div class="card">
+    <h3>PAUSED</h3>
+    <div class="keys">
+      <span>W A S D</span><span>Move</span>
+      <span>Shift</span><span>Sprint</span>
+      <span>E</span><span>Car</span>
+      <span>F</span><span>Fire</span>
+      <span>T</span><span>Fares</span>
+      <span>R</span><span>Retry a failed mission</span>
+    </div>
+    <p id="pause-save">Progress saves every ten seconds.</p>
+    <div class="row">
+      <button id="btn-resume">RESUME</button>
     </div>
   </div>
+</div>
 
-  <div id="shop" class="overlay panel hidden">
-    <div class="card">
-      <h2>Vine Mart</h2>
-      <p>Open all day. Cash only.</p>
-      <div class="shop-list">
-        <div class="shop-row"><span>Rifle</span><b>$600</b><button data-buy="rifle">Buy</button></div>
-        <div class="shop-row"><span>Ammo +60</span><b>$100</b><button data-buy="ammo">Buy</button></div>
-        <div class="shop-row"><span>Armour</span><b>$250</b><button data-buy="armor">Buy</button></div>
-        <div class="shop-row"><span>Medkit</span><b>$50</b><button data-buy="medkit">Buy</button></div>
-      </div>
-      <p id="shop-status"></p>
-      <div class="buttons" style="justify-content:center">
-        <button id="btn-shop-close" class="primary">Close</button>
-      </div>
+<div id="shop" class="screen">
+  <div class="card">
+    <h3>VINE MART</h3>
+    <p>Cold drinks, warm cash.</p>
+    <div id="shop-list"></div>
+    <div class="row">
+      <button class="ghost" id="btn-shop-close">LEAVE</button>
     </div>
   </div>
+</div>
 
-  <div id="complete" class="overlay panel hidden">
-    <div class="card">
-      <h2>Mission Complete</h2>
-      <p id="complete-title">Wheels for Vesper</p>
-      <p class="story" id="complete-story"></p>
-      <p class="stat-line">Reward <b id="complete-reward">$500</b></p>
-      <div class="buttons" style="justify-content:center">
-        <button id="btn-complete-next" class="primary">Next Mission</button>
-      </div>
+<div id="complete" class="screen">
+  <div class="card">
+    <h3 id="complete-title">MISSION COMPLETE</h3>
+    <p id="complete-story"></p>
+    <p id="complete-reward"></p>
+    <div class="row">
+      <button id="btn-next">NEXT MISSION</button>
     </div>
   </div>
+</div>
 
-  <div id="busted" class="overlay panel hidden">
-    <div class="card">
-      <h2>Busted</h2>
-      <p>The Sable Row station took a booking fee out of your pocket.</p>
-      <p class="stat-line">Fee <b>$150</b></p>
-      <div class="buttons" style="justify-content:center">
-        <button id="btn-busted" class="primary">Walk Out</button>
-      </div>
-    </div>
+<div id="busted" class="screen">
+  <div class="card">
+    <h3>BUSTED</h3>
+    <p>The cuffs click. Sable Row books you, fines you, and lets you walk at dawn.</p>
+    <div class="row"><button id="btn-busted-ok">WALK OUT</button></div>
   </div>
+</div>
 
-  <div id="wasted" class="overlay panel hidden">
-    <div class="card">
-      <h2>Wasted</h2>
-      <p>Cedar View patched you up. They also sent a bill.</p>
-      <p class="stat-line">Fee <b>$100</b></p>
-      <div class="buttons" style="justify-content:center">
-        <button id="btn-wasted" class="primary">Leave Hospital</button>
-      </div>
-    </div>
+<div id="wasted" class="screen">
+  <div class="card">
+    <h3>WASTED</h3>
+    <p>Cedar View patched you up. The bill is waiting at the desk.</p>
+    <div class="row"><button id="btn-wasted-ok">LEAVE HOSPITAL</button></div>
   </div>
+</div>
 
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "./vendor/three/three.module.min.js"
-    }
+<div id="error"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.min.js"
   }
-  </script>
-  <script type="module" src="./src/main.js"></script>
+}
+</script>
+<script type="module" src="./src/main.js"></script>
 </body>
 </html>

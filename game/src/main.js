@@ -1,202 +1,191 @@
-import * as cfg from './config.js';
-import * as rnd from './random.js';
-import * as inp from './input.js';
-import * as wld from './world.js';
-import * as cty from './city.js';
-import * as ply from './player.js';
-import * as veh from './car.js';
-import * as trf from './traffic.js';
-import * as pds from './peds.js';
-import * as pol from './police.js';
-import * as msn from './missions.js';
-import * as eco from './economy.js';
-import * as hud from './hud.js';
-import * as sfx from './sfx.js';
-import * as fx from './render.js';
-import * as sht from './shots.js';
-const el = (id) => document.getElementById(id);
-const CFG = cfg.CONFIG, COST = CFG.economy, WANT = CFG.wanted.stars, PC = CFG.player, STEP = cfg.STEP, S = sfx.S;
-const tell = hud.toast, showP = hud.showPanel, hideP = hud.hidePanels, showHud = hud.showHUD, save = eco.saveGame;
-const far = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
-const hold = (I, a, b) => (I.down(a) ? 1 : 0) - (I.down(b) ? 1 : 0);
-const fail = (e) => {
- const m = String((e && e.message) || e).slice(0,100);
- document.title = 'SB-error-' + m;
- const b = el('boot-error') || document.body.appendChild(document.createElement('pre'));
- b.id = 'boot-error'; b.textContent = m;
-};
-function boot() {
- const q = new URLSearchParams(location.search);
- const seed = rnd.hashString(q.get('seed') || '1337');
- const W = wld.initWorld(document.createElement('canvas'));
- el('app').appendChild(W.canvas);
- const town = cty.buildCity(W, rnd.makeRng(seed));
- const I = inp.createInput(W.canvas);
- const P = ply.createPlayer(W, town);
- const rng = rnd.makeRng(seed + 7);
- const sound = { ...S, ...sfx.initSfx(), engineOff: sfx.engineOff, engine: (on) => (on ? sfx.engineOn('sport') : sfx.engineOff()) };
- const cars = town.spawns.carParks.map((p) => {
-  const c = veh.makeCar(p.kind, p.x, p.z, p.heading || 0, p.color);
-  c.tag = p.tag;
-  W.scene.add(c.mesh);
-  return c;
- });
- const traffic = trf.spawnTraffic(W, rng, 11);
- traffic.forEach((c) => W.scene.add(c.mesh));
- const peds = pds.spawnPeds(W, town, rng, 15);
- const PO = pol.initPolice(W, town, rnd.makeRng(seed + 11));
- const M = msn.initMissions();
- const saved = eco.loadGame(), E = eco.initEconomy(saved);
- const H = hud.createHUD();
- const crate = town.pickup;
- let loot = false;
- const cash = () => { H.shopStatus.textContent = `Cash: $${(E.money|0)}`; };
- const stars = (n) => pol.addStars(PO, n, G);
- function wreck(car) {
-  if (!car || car.blown) return;
-  const lit = (b) => far(b.pos || b, car) < 4 && !b.down && b.state !== 'down';
-  car.blown = true;
-  fx.spawnExplosion({ x: car.x, y: 0.9, z: car.z });
-  S.explode();
-  PO.foot.forEach((c) => { if (lit(c)) pol.officerHit(PO, c, 99, G); });
-  peds.forEach((b) => { if (lit(b)) b.hp = 0; });
-  if (G.inCar === car) { G.inCar = null; I.unlock(); G.wasted(); }
- }
- function recover() {
-  const out = G.screen === 'busted';
-  eco.addMoney(E, -Math.min(E.money, out ? COST.bustedFee : COST.hospitalFee), null);
-  pol.clearWanted(PO, G);
-  ply.respawnPlayer(P, G, town.places[out ? 'station' : 'hospital']);
-  P.dead = false; P.hp = PC.hp; P.group.visible = true;
-  hideP(H); save(G); G.screen = 'play';
- }
- function leave() {
-  const s = veh.seatPoints(G.inCar);
-  Object.assign(G.inCar, { player: false, occupant: null, speed: 0 });
-  G.inCar = null;
-  P.pos.x = s.x; P.pos.z = s.z;
-  P.group.position.set(s.x, 0, s.z); P.group.visible = true;
-  sfx.engineOff();
- }
- function take(car) {
-  if (!car || car.wrecked) return;
-  const cop = car.kind === 'police';
-  if (cop) stars(WANT.policeCar);
-  if (car.occupant) {
-  if (!cop) stars(WANT.theftOccupied);
-  const out = peds.find((p) => p.state === 'walk'), side = car.heading + Math.PI / 2;
-  if (out) {
-    Object.assign(out, { state: 'flee', fleeT: 6, leg: null });
-    Object.assign(out.pos, { x: car.x + Math.sin(side) * 2, z: car.z + Math.cos(side) * 2 });
-    out.mesh.visible = true;
-    tell(H, 'Stolen car. Noticed.');
+import {CONFIG,STEP} from './config.js';
+import {makeRng} from './random.js';
+import {createInput} from './input.js';
+import {initWorld,updateCamera,renderFrame} from './world.js';
+import {buildCity} from './city.js';
+import {createPlayer,updatePlayerFoot,fireWeapon,damagePlayer,respawnPlayer,givePickup} from './player.js';
+import {makeCar,updateCarDrive} from './car.js';
+import {spawnTraffic,updateTraffic} from './traffic.js';
+import {spawnPeds,updatePeds,makeFarePed,damagePed} from './peds.js';
+import {initPolice,addStars,updatePolice,hurtCop,clearWanted} from './police.js';
+import {initMissions,updateMissions,startMission,retryMission,missionPanelText} from './missions.js';
+import {initEconomy,addMoney,buyItem,setFares,updateFares,saveGame,loadGame,tickSave,SHOP} from './economy.js';
+import {createHUD,updateHUD,drawMinimap,toast,hidePanels,showPanel} from './hud.js';
+import {S,engineOn,engineOff,engineFromSpeed,initSfx} from './sfx.js';
+import {initEffects,updateEffects,spawnTracer,spawnMuzzle,spawnExplosion,spawnSmokePuff,spawnSpark,flashDamage} from './render.js';
+import {applyShot} from './shots.js';
+
+const el=(id)=>document.getElementById(id)||{textContent:'',style:{},addEventListener(){}};
+const CR=CONFIG.wanted.crime,EC=CONFIG.economy;
+const Q=new URLSearchParams(location.search);
+
+function fail(e){document.title='SB-error-'+String((e&&(e.stack||e.message))||e).slice(0,100);}
+
+function boot(){
+  const rng=makeRng(Number(Q.get('seed'))||1337);
+  const W=initWorld(el('app')),city=buildCity(W,rng),P=createPlayer(W,city);
+  const MK=city.markers,cars=city.spawns.carParks.map((s)=>Object.assign(makeCar(s.kind,s.x,s.z,s.heading,s.color,W),{label:s.label||'',missionCar:!!s.mission1}));
+  const m1Car=cars.find((c)=>c.label==='m1car')||cars[0];
+  const traffic=spawnTraffic(W,rng,11),peds=spawnPeds(W,city,rng,15),PO=initPolice(W,city,rng);
+  const M=initMissions(),loaded=loadGame(),E=initEconomy(loaded);
+  if(!document.getElementById('timer')){const tm=document.createElement('span');tm.id='timer';document.getElementById('objective').appendChild(tm);}
+  const H=createHUD();
+  H.toast=(t)=>toast(H,t);
+  initSfx();
+  Object.assign(initEffects(W),{tracer:spawnTracer,muzzle:spawnMuzzle,explosion:spawnExplosion,smoke:spawnSmokePuff,spark:spawnSpark});
+  const I=createInput(W.renderer.domElement);
+  const G={
+    W,city,P,cars,traffic,peds,PO,M,E,H,I,rng,m1Car,hud:H,sound:S,effects:W.fx,
+    screen:'title',inCar:null,alarm:0,alarmX:0,alarmZ:0,time:0,frame:0,fareMarker:null,
+    engine:{on:engineOn,off:engineOff,update:engineFromSpeed},
+    toast:(t)=>toast(H,t),addMoney:(n)=>addMoney(E,n,H),flashDamage,saveNow:()=>saveGame(G),
+    damagePlayer:(a)=>damagePlayer(P,a,G),
+    damagePed:(p,a)=>{const w=p.hp;damagePed(p,a,G);if(w>0)addStars(PO,CR.shootPed,G);},
+    damageCop:(c,a)=>addStars(PO,hurtCop(c,a,G).killed?CR.killCop:1,G),
+    damageTrafficCar:(c,a)=>{c.hp-=a;if(c.hp<=0)explodeCar(c);},
+    onCarExplode:explodeCar,
+    onPedHit:(p)=>addStars(PO,p.hp>0?CR.hitPed:CR.killPed,G),
+    onCopDown:()=>addStars(PO,1,G),
+    spawnFare:(x,z)=>{const p=makeFarePed(W,city,rng,x,z);peds.push(p);return p;},
+    setFareMarker:(x,z)=>{G.fareMarker=x==null?null:{x,z};},
+    missionText:()=>missionPanelText(M,G),
+    explodeCar,spawnExplosion,bust:()=>bust(),wasted:()=>wasted(),
+    missionComplete:(d)=>{
+      el('complete-title').textContent=d.title.toUpperCase()+' COMPLETE';
+      el('complete-story').textContent=d.story;
+      el('complete-reward').textContent='Reward $'+d.reward;
+      play();showPanel(H,'complete');
+    },
+  };
+  function explodeCar(c){
+    if(!c||c.wrecked)return;
+    c.wrecked=true;c.speed=0;
+    spawnExplosion({x:c.x,y:1,z:c.z});
+    c.mesh.traverse((o)=>{if(o.isMesh)o.material.color.setHex(0x2f2924);});
+    S.explode();
+    if(G.inCar===c){leaveCar();damagePlayer(P,50,G);}
   }
+  function leaveCar(){
+    const c=G.inCar;
+    if(!c)return;
+    Object.assign(c,{player:false,occupant:null});
+    G.inCar=null;
+    P.pos.x=c.x+2.2;P.pos.z=c.z;P.group.visible=true;
+    P.group.position.set(P.pos.x,0,P.pos.z);engineOff();
   }
-  Object.assign(car, { occupant: 'player', player: true });
-  G.inCar = car;
-  sfx.engineOn(car.kind);
-  I.lock();
- }
- const nearest = () => cars.concat(traffic).filter((c) => !c.wrecked && far(c, P.pos) < 3.2)
-  .sort((a, b) => far(a, P.pos) - far(b, P.pos))[0];
- const end = (how) => {
-  if (G.screen !== 'play') return;
-  if (G.inCar) leave();
-  G.screen = how; showP(H, how); S.jingle(how === 'complete');
- };
- function missionComplete(pay, story) {
-  eco.addMoney(E, pay, H);
-  H.completeTitle.textContent = 'Job done'; H.completeStory.textContent = story;
-  H.completeReward.textContent = `+$${pay}`;
-  save(G); end('complete');
- }
- const G = Object.assign({ W, city: town, P, cars, traffic, peds, PO, M, E, H, I, effects: fx, sound, rng, cash, stars },
-  { screen: 'title', inCar: null, alarm: 0, alarmX: 0, alarmZ: 0, time: 0, saveT: 0, objective: null,
-  shot: q.get('shot') || null, explodeCar: wreck, onCarExplode: wreck, addStars: stars, damagePed: () => {},
-  damageTrafficCar: (c, d) => { c.hp -= d; if (c.hp <= 0) wreck(c); }, missionComplete, toast: (t) => tell(H, t),
-  saveGame: () => save(G), clearWanted: () => pol.clearWanted(PO, G), damagePlayer: (a) => ply.damagePlayer(P, a, G),
-  damageCop: (c, d) => pol.officerHit(PO, c, d, G), bust: () => end('busted'), wasted: () => end('wasted'),
-  missionStart: (d) => { hud.setBanner(H, d.title, 2600); tell(H, d.brief); }, missionFail: (t, h) => tell(H, `${t}: ${h}`),
-  onPedHit: (p, how) => stars(how === 'car' ? WANT.hitPed : WANT.killPed), onPedKill: () => stars(WANT.killPed),
-  onCopDown: () => stars(WANT.killCop) });
- const resume = (fn) => () => { hideP(H); showHud(H, true); G.screen = 'play'; I.lock(); fn?.(); };
- const on = {};
- on.continue = resume(() => {
-  const s = saved || {}; E.money = s.money || 0;
-  Object.assign(P, { rifle: !!s.rifle, ammo: s.ammo || 0, armor: s.armor || 0, weapon: s.rifle ? 'rifle' : 'pistol' });
-  msn.restoreMissions(M, s);
- });
- on.new = resume(() => { eco.clearSave(); tell(H, 'Vesper waits at the Glass Orchid'); });
- on.title = () => { save(G); showHud(H, false); I.unlock(); G.screen = 'title'; showP(H, 'title'); };
- on.shop = () => (far(town.places.vineMart, P.pos) > 3 ? tell(H, 'Vine Mart is the shop')
-  : (cash(), G.screen = 'shop', showP(H, 'shop')));
- on.resume = on['shop-close'] = on['complete-next'] = resume();
- on.busted = on.wasted = resume(recover);
- for (const id in on) el('btn-' + id).addEventListener('click', on[id]);
- if (saved) el('btn-continue').classList.remove('hidden');
- eco.SHOP.forEach((r) => document.querySelector(`[data-buy="${r.item}"]`)
-  .addEventListener('click', () => { eco.buyItem(E, P, r.item, G); cash(); }));
- W.canvas.addEventListener('mousedown', (ev) => {
-  if (G.screen !== 'play' || ev.button) return;
-  if (!I.locked) return I.lock();
-  if (!G.inCar) ply.fireWeapon(P, G);
- });
- function step(dt) {
-  const live = G.screen === 'play', hit = I.wasPressed, car = G.inCar;
-  G.time += dt;
-  if (hit('Escape')) {
-  G.screen = live ? 'pause' : 'play';
-  live ? (showP(H, 'pause'), I.unlock()) : (hideP(H), I.lock());
+  function takeCar(c){
+    if(!c||c.wrecked)return;
+    leaveCar();
+    const npc=c.occupant==='npc';
+    addStars(PO,c.kind==='police'?CR.policeCar:npc?CR.theftOccupied:0,G);
+    if(npc)peds.push(Object.assign(makeFarePed(W,city,rng,c.x+2.4,c.z),{state:'flee',fare:false,fleeT:6,fleeX:P.pos.x,fleeZ:P.pos.z}));
+    Object.assign(c,{occupant:'player',player:true});
+    G.inCar=c;P.group.visible=false;engineOn(c.kind);
   }
-  if (!live) { fx.updateEffects(W, dt); wld.renderFrame(W); return; }
-  if (hit('KeyE')) (car ? leave() : take(nearest()));
-  if (hit('KeyF') && !car) ply.fireWeapon(P, G);
-  if (hit('KeyQ') && P.rifle) P.weapon = P.weapon === 'rifle' ? 'pistol' : 'rifle';
-  if (hit('KeyB') && !car) on.shop();
-  if (hit('KeyT') && car && car.kind === 'taxi') eco.setFares(E, !E.fares, G);
-  if (crate && !loot && far(crate, P.pos) < 2) {
-  loot = true; ply.givePickup(P, G, 'rifle'); S.chime();
-  tell(H, 'Rifle from the crate. Q swaps.');
+  function nearestCar(){
+    let best=null,near=3.2;
+    for(const c of cars.concat(traffic)){
+      const d=Math.hypot(c.x-P.pos.x,c.z-P.pos.z);
+      if(!c.wrecked&&d<near){near=d;best=c;}
+    }
+    return best;
   }
-  if (car) {
-  veh.updateCarDrive(car, hold(I, 'KeyW', 'KeyS'), hold(I, 'KeyA', 'KeyD'), I.down('Space'), dt, W, G);
-  sfx.engineUpdate(Math.min(1, Math.abs(car.speed) / car.max), dt);
-  } else ply.updatePlayerFoot(P, G, I, dt);
-  trf.updateTraffic(traffic, W, G, dt);
-  pds.updatePeds(peds, W, G, dt);
-  pol.updatePolice(PO, G, I, dt);
-  msn.updateMissions(M, G, dt);
-  eco.updateFares(E, G, dt);
-  G.alarm = Math.max(0, G.alarm - dt * 0.5);
-  if ((G.saveT += dt) > 10) { G.saveT = 0; save(G); }
-  fx.updateEffects(W, dt);
-  fx.updateHurtFx();
-  hud.updateHUD(H, G, dt);
-  if (H.frame % 2 === 0) hud.drawMinimap(H, G);
-  wld.updateCamera(W, I, car ? { x: car.x, z: car.z, y: 1.3, dist: 8.5 }
-  : { x: P.pos.x, z: P.pos.z, y: PC.camHeight, dist: PC.camDistFoot }, dt);
-  wld.renderFrame(W);
- }
- let last = 0, acc = 0;
- function frame(now) {
-  try {
-  requestAnimationFrame(frame);
-  const t = now * 0.001;
-  acc = Math.min(0.25, acc + (last ? t - last : STEP));
-  last = t;
-  for (let n = 0; acc >= STEP && n < 5; n += 1) { step(STEP); acc -= STEP; }
-  if (acc >= STEP) acc = 0;
-  I.endFrame();
-  } catch (e) { fail(e); }
- }
- const name = G.shot && sht.applyShot(G.shot, G);
- if (name) requestAnimationFrame(() => requestAnimationFrame(() => {
-  window.__shotReady = true;
-  document.title = 'SB-' + name + '-ok';
- }));
- else if (!G.shot) { showHud(H, false); showP(H, 'title'); }
- requestAnimationFrame(frame);
+  const end=(id,fee)=>{
+    if(G.screen!=='play')return;
+    G.screen=id;
+    E.money=Math.max(0,E.money-fee);
+    showPanel(H,id);S.jingle(false);
+  };
+  const bust=()=>end('busted',EC.bustedFee),wasted=()=>end('wasted',EC.hospitalFee);
+  const play=()=>{hidePanels(H);G.orbit=null;G.screen='play';I.lock();};
+  function leave(where){
+    leaveCar();clearWanted(PO,G);respawnPlayer(P,G,where);G.alarm=0;play();
+  }
+  function reset(src){
+    Object.assign(E,{money:src?src.money:EC.start});
+    Object.assign(M,{index:src?src.missionIndex|0:0,active:null,done:src?src.missionIndex|0:0,fail:null,stage:0});
+    Object.assign(P,src?{rifle:!!src.rifle,ammo:src.ammo|0,armor:Math.min(100,src.armor|0)}
+      :{rifle:false,ammo:0,armor:0,hp:CONFIG.player.hp,weapon:'pistol'});
+    play();
+    toast(H,src?'Welcome back':'Meet Vesper');
+  }
+  function openShop(){
+    if(G.inCar||P.dead)return;
+    const v=MK.vineMart;
+    if(Math.hypot(P.pos.x-v.x,P.pos.z-v.z)>9)return toast(H,'Vine Mart only');
+    const list=el('shop-list');
+    list.replaceChildren();
+    for(const r of SHOP){
+      const line=document.createElement('div');
+      line.className='shopitem';
+      line.innerHTML='<b>'+r.label+'</b><button>$'+r.price+'</button>';
+      line.lastChild.onclick=()=>{buyItem(E,P,r.item,G);openShop();};
+      list.appendChild(line);
+    }
+    G.screen='shop';showPanel(H,'shop');I.unlock();
+  }
+  const bind=(id,fn)=>el(id).addEventListener('click',(e)=>{e.preventDefault();fn();});
+  if(loaded){el('btn-continue').style.display='';bind('btn-continue',()=>reset(loaded));}
+  bind('btn-new',()=>reset(null));
+  for(const id of['btn-resume','btn-shop-close','btn-next'])bind(id,play);
+  bind('btn-busted-ok',()=>leave(MK.station));
+  bind('btn-wasted-ok',()=>leave(MK.hospital));
+  W.renderer.domElement.addEventListener('mousedown',()=>{
+    if(G.screen!=='play')return;
+    if(!I.locked)I.lock();
+    else if(!G.inCar&&!P.dead)fireWeapon(P,G);
+  });
+  function step(dt){
+    G.time+=dt;G.alarm=Math.max(0,G.alarm-dt*0.35);
+    const up=city.pickup,c=G.inCar;
+    if(!P.rifle&&Math.hypot(P.pos.x-up.x,P.pos.z-up.z)<2&&givePickup(P,G,'rifle')){P.ammo=P.ammo||60;toast(H,'Rifle');}
+    if(c){
+      const ax=I.axis();
+      updateCarDrive(c,ax.y,-ax.x,I.down('Space')?1:0,dt,W,G);
+      P.yaw=c.heading;P.pos.x=c.x;P.pos.z=c.z;
+      if(c.wrecked)leaveCar();
+      engineFromSpeed(c,dt);
+    }else updatePlayerFoot(P,G,I,dt);
+    updateTraffic(traffic,W,G,dt);updatePeds(peds,W,G,dt);
+    updatePolice(PO,G,I,dt);updateMissions(M,G,dt);
+    updateFares(E,G,dt);updateEffects(W,dt);tickSave(E,G,dt);
+  }
+  function keys(){
+    if(I.wasPressed('Escape')){
+      if(G.screen==='play'){G.screen='pause';showPanel(H,'pause');I.unlock();}else play();
+      return;
+    }
+    if(G.screen!=='play'){if(M.fail&&I.wasPressed('KeyR'))retryMission(M,G);return;}
+    if(I.wasPressed('KeyE'))G.inCar?leaveCar():takeCar(nearestCar());
+    if(I.wasPressed('KeyF')&&!G.inCar&&!P.dead)fireWeapon(P,G);
+    if(I.wasPressed('KeyT'))G.inCar&&G.inCar.kind==='taxi'?setFares(E,!E.fares,G):toast(H,'Taxi only');
+    if(I.wasPressed('KeyB'))openShop();
+    if(I.wasPressed('KeyR')&&!M.active&&!retryMission(M,G))startMission(M,G);
+    if(I.wasPressed('KeyQ')&&P.rifle){P.rifle=P.weapon!=='rifle';P.weapon=P.rifle?'rifle':'pistol';}
+  }
+  let acc=0,last=performance.now();
+  function loop(now){
+    try{
+      const raw=Math.min(0.25,Math.max(0,(now-last)/1000));
+      last=now;
+      if(G.screen==='play'){
+        keys();acc=Math.min(acc+raw,STEP*5);
+        while(acc>=STEP){step(STEP);acc-=STEP;}
+      }else acc=0;
+      const o=G.orbit,c=G.inCar;
+      if(o){
+        o.yaw+=o.spin*raw;
+        W.camera.position.set(o.x+Math.sin(o.yaw)*o.dist,o.y,o.z+Math.cos(o.yaw)*o.dist);W.camera.lookAt(o.x+40,12,o.z-60);
+      }else updateCamera(W,I,c?{x:c.x,z:c.z,inCar:true,y:1.4}:{x:P.pos.x,z:P.pos.z,inCar:false,y:CONFIG.player.camHeight},G.screen==='play'?STEP:raw);
+      renderFrame(W);G.frame++;
+      if(G.frame%2===0)drawMinimap(H,G);
+      updateHUD(H,G,raw);I.endFrame();
+    }catch(e){fail(e);}
+    requestAnimationFrame(loop);
+  }
+  if(Q.get('shot'))applyShot(Q.get('shot'),G);
+  else showPanel(H,'title');
+  requestAnimationFrame(loop);
 }
-try {
- boot();
-} catch (e) { fail(e); }
+
+try{boot();}catch(e){fail(e);}

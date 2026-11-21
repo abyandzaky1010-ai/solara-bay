@@ -1,6 +1,5 @@
-// Solara Bay — the colour palette and the shared material cache.
-// Every colour is named for the thing it paints.
-
+// Solara Bay colour palette: sun-bleached pastels over warm asphalt.
+// Every colour is named for the thing it paints; materials are cached per hex+mode.
 import * as THREE from 'three';
 
 export const C = {
@@ -35,18 +34,23 @@ export const C = {
 
 const cache = new Map();
 
-export function material(hex, { flat = false, glassy = false } = {}) {
-  const key = `${hex}|${flat ? 1 : 0}|${glassy ? 1 : 0}`;
+/**
+ * Shared material for a hex colour.
+ * flat   -> unlit (markers, window tint, road paint)
+ * glassy -> glossy phong (towers, car paint)
+ * otherwise -> matte lambert (default surface look)
+ */
+export function material(hex, { flat = false, glassy = false, opacity = 1 } = {}) {
+  const key = `${hex}|${flat ? 'f' : ''}${glassy ? 'g' : ''}|${opacity}`;
   const hit = cache.get(key);
   if (hit) return hit;
 
   let mat;
-  if (flat && glassy) {
+  if (flat) {
     mat = new THREE.MeshBasicMaterial({ color: hex });
-  } else if (flat) {
-    mat = new THREE.MeshBasicMaterial({ color: hex });
+    if (opacity < 1) { mat.transparent = true; mat.opacity = opacity; }
   } else if (glassy) {
-    mat = new THREE.MeshPhongMaterial({ color: hex, shininess: 80, specular: 0xffffff });
+    mat = new THREE.MeshPhongMaterial({ color: hex, shininess: 80, specular: 0xdfefff });
   } else {
     mat = new THREE.MeshLambertMaterial({ color: hex });
   }

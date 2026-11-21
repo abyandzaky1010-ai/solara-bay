@@ -1,7 +1,8 @@
-// Solara Bay — small deterministic random helpers so a seed always builds the same city.
+// Deterministic randomness. Same seed, same city, same crowd, same screenshots.
 
+/** mulberry32: tiny 32-bit generator with a usable spread for layout work. */
 export function makeRng(seed) {
-  let state = (typeof seed === 'number' ? seed : hashString(String(seed ?? 0))) >>> 0;
+  let state = (seed >>> 0) || 1;
 
   function next() {
     state = (state + 0x6d2b79f5) >>> 0;
@@ -13,29 +14,20 @@ export function makeRng(seed) {
 
   return {
     next,
-    range(a, b) {
-      return a + (b - a) * next();
-    },
-    int(a, b) {
-      return Math.floor(a + (b - a + 1) * next());
-    },
-    pick(arr) {
-      return arr[Math.floor(next() * arr.length)];
-    },
-    chance(p) {
-      return next() < p;
-    },
-    angle() {
-      return next() * Math.PI * 2;
-    },
+    range: (a, b) => a + (b - a) * next(),
+    int: (a, b) => Math.floor(a + (b - a + 1) * next()),
+    pick: (arr) => arr[Math.floor(next() * arr.length) % arr.length],
+    chance: (p) => next() < p,
+    angle: () => next() * Math.PI * 2,
   };
 }
 
+/** Stable 32-bit hash of a string, used to turn names into seeds. */
 export function hashString(s) {
-  let h = 0x811c9dc5;
+  let h = 2166136261 >>> 0;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
+    h = Math.imul(h, 16777619) >>> 0;
   }
   return h >>> 0;
 }
