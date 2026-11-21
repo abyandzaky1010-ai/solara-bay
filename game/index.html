@@ -1,90 +1,352 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Solara Bay</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SOLARA BAY</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e141c; font-family: 'Segoe UI', system-ui, sans-serif; color: #f2f5fa; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  .hidden { display: none !important; }
-  #hud { position: fixed; inset: 0; pointer-events: none; }
-  .panel-bg { background: rgba(14,18,26,0.55); border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; }
-  #objective { position: absolute; top: 14px; left: 14px; max-width: 340px; padding: 8px 12px; font-size: 14px; line-height: 1.35; }
-  #objective b { color: #ffc857; display: block; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
-  #stars { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); font-size: 26px; letter-spacing: 4px; color: #ffc857; text-shadow: 0 2px 6px rgba(0,0,0,0.6); }
-  #stars .off { color: rgba(255,255,255,0.25); }
-  #stars.blink { animation: blink 0.5s steps(2) infinite; }
-  @keyframes blink { 50% { opacity: 0.35; } }
-  #minimap { position: absolute; top: 14px; right: 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); background: #0e141c; }
-  #money { position: absolute; top: 212px; right: 14px; padding: 6px 12px; font-size: 18px; font-weight: 600; color: #7ee08a; }
-  #vitals { position: absolute; left: 14px; bottom: 14px; width: 220px; }
-  #hpbar { height: 14px; border-radius: 7px; background: rgba(255,255,255,0.12); overflow: hidden; }
-  #hpfill { height: 100%; width: 100%; background: linear-gradient(90deg, #e05050, #ffc857); transition: width 0.15s; }
-  #gun { position: absolute; right: 14px; bottom: 14px; padding: 6px 12px; font-size: 14px; text-align: right; }
-  #speed { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); font-size: 22px; font-weight: 700; color: #ffc857; }
-  #prompt { position: absolute; left: 50%; bottom: 90px; transform: translateX(-50%); padding: 6px 14px; font-size: 15px; color: #ffc857; }
-  #dialog { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); max-width: 560px; padding: 8px 16px; font-size: 15px; font-style: italic; color: #ffe9a8; }
-  #vignette { position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 120px rgba(220,30,30,0); }
-  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(8,10,16,0.45); }
-  .card { max-width: 620px; padding: 28px 34px; text-align: center; background: rgba(14,18,26,0.88); border: 1px solid rgba(255,200,87,0.35); border-radius: 14px; }
-  .card h1 { margin: 0 0 4px; font-size: 44px; letter-spacing: 6px; color: #ffc857; }
-  .card h2 { margin: 0 0 14px; font-size: 15px; font-weight: 500; color: #9fd4f5; }
-  .card p { font-size: 14px; line-height: 1.5; color: #cfd6e4; text-align: left; }
-  .controls { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 13px; text-align: left; margin: 12px auto; max-width: 430px; color: #cfd6e4; }
-  .controls b { color: #ffc857; font-weight: 600; }
-  button { pointer-events: auto; cursor: pointer; margin: 6px; padding: 10px 22px; font-size: 16px; border-radius: 8px; border: 1px solid #ffc857; background: #ffc857; color: #1a1408; font-weight: 700; }
-  button.ghost { background: transparent; color: #ffc857; }
-  .shopitem { display: flex; justify-content: space-between; gap: 20px; padding: 6px 0; font-size: 15px; }
-  .big { font-size: 40px; letter-spacing: 8px; color: #ffc857; font-weight: 800; }
+  :root {
+    --panel: rgba(18, 26, 38, 0.62);
+    --panel-solid: rgba(18, 26, 38, 0.9);
+    --edge: rgba(255, 255, 255, 0.16);
+    --ink: #f6fbff;
+    --dim: #b8c9da;
+    --coral: #ff8566;
+    --mint: #7fe0c0;
+    --gold: #ffd24a;
+    --sky: #bfe3ff;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #0e1622;
+    color: var(--ink);
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+  }
+  #app { position: fixed; inset: 0; }
+  #app canvas { display: block; width: 100%; height: 100%; }
+
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  #hud.damage::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at center, rgba(255, 40, 40, 0) 45%, rgba(255, 40, 40, 0.55) 100%);
+    animation: vignette 0.25s ease-out forwards;
+  }
+  @keyframes vignette { from { opacity: 1; } to { opacity: 0; } }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--edge);
+    border-radius: 10px;
+    backdrop-filter: blur(6px);
+  }
+
+  #topbar {
+    position: absolute; top: 14px; left: 16px;
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 10px 14px;
+    min-width: 240px;
+  }
+  #stars { font-size: 22px; letter-spacing: 3px; height: 26px; }
+  #stars .on { color: var(--gold); text-shadow: 0 0 8px rgba(255, 210, 74, 0.8); }
+  #stars .off { color: rgba(255, 255, 255, 0.22); }
+  #stars.pulse { animation: pulse 0.4s ease-out; }
+  @keyframes pulse { 0% { transform: scale(1.25); } 100% { transform: scale(1); } }
+  #money { font-size: 24px; font-weight: bold; color: var(--mint); }
+
+  #vitals {
+    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    width: 300px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .bar {
+    height: 12px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--edge);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .bar > i { display: block; height: 100%; width: 100%; transition: width 0.18s linear; }
+  #healthbar > i { background: linear-gradient(90deg, var(--coral), #ffb3a0); }
+  #armorbar > i { background: linear-gradient(90deg, #4d8dff, var(--sky)); }
+
+  #weaponbox {
+    position: absolute; bottom: 18px; left: 18px;
+    padding: 8px 14px;
+    font-size: 15px;
+    color: var(--dim);
+  }
+  #weapon { color: var(--ink); font-weight: bold; letter-spacing: 1px; text-transform: uppercase; }
+  #speed {
+    position: absolute; bottom: 18px; right: 210px;
+    padding: 8px 14px;
+    font-size: 18px; font-weight: bold;
+    color: var(--ink);
+    display: none;
+  }
+  #speed.show { display: block; }
+
+  #objective {
+    position: absolute; top: 92px; left: 16px;
+    max-width: 320px;
+    padding: 8px 12px;
+    font-size: 14px;
+    line-height: 1.35;
+    color: var(--ink);
+    background: var(--panel);
+    border-left: 3px solid var(--gold);
+    border-radius: 6px;
+    display: none;
+  }
+  #objective.show { display: block; }
+  #timer {
+    position: absolute; top: 92px; left: 352px;
+    padding: 8px 12px;
+    font-size: 18px; font-weight: bold;
+    color: var(--gold);
+    background: var(--panel);
+    border-radius: 6px;
+    display: none;
+  }
+  #timer.show { display: block; }
+  #timer.hurry { color: var(--coral); }
+
+  #toasts {
+    position: absolute; top: 130px; right: 222px;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  }
+  .toast {
+    padding: 6px 12px;
+    font-size: 14px;
+    background: var(--panel);
+    border: 1px solid var(--edge);
+    border-radius: 6px;
+    animation: toastin 0.2s ease-out;
+  }
+  @keyframes toastin { from { opacity: 0; transform: translateX(12px); } }
+
+  #minimap {
+    position: absolute; top: 16px; right: 16px;
+    width: 180px; height: 180px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.5);
+    background: rgba(10, 18, 26, 0.7);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  }
+
+  #crosshair {
+    position: absolute; top: 50%; left: 50%;
+    width: 5px; height: 5px;
+    margin: -2.5px 0 0 -2.5px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+  }
+
+  .screen {
+    position: fixed; inset: 0; z-index: 10;
+    display: none;
+    align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 50% 30%, rgba(24, 40, 60, 0.5), rgba(8, 14, 22, 0.88));
+  }
+  .screen.show { display: flex; }
+  .screen .card {
+    background: var(--panel-solid);
+    border: 1px solid var(--edge);
+    border-radius: 16px;
+    padding: 26px 34px;
+    max-width: 660px;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  }
+  .screen h1 {
+    margin: 0 0 6px;
+    font-size: 64px;
+    letter-spacing: 6px;
+    color: var(--ink);
+    text-shadow: 0 4px 0 rgba(255, 133, 102, 0.55), 0 10px 30px rgba(0, 0, 0, 0.6);
+  }
+  .screen h2 { margin: 0 0 14px; font-size: 28px; letter-spacing: 3px; color: var(--coral); }
+  .screen .tagline { color: var(--gold); font-size: 18px; margin-bottom: 18px; font-style: italic; }
+  .screen p { color: var(--dim); font-size: 14px; line-height: 1.5; }
+  .controls {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 4px 18px;
+    justify-content: center;
+    margin: 16px 0 20px;
+    font-size: 14px;
+    text-align: left;
+  }
+  .controls b { color: var(--mint); font-weight: bold; }
+  .screen button {
+    pointer-events: auto;
+    margin: 4px;
+    padding: 10px 22px;
+    font: inherit;
+    font-size: 16px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    color: #16202c;
+    background: var(--mint);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .screen button:hover { background: #a6f2db; }
+  .screen button.alt { background: rgba(255, 255, 255, 0.14); color: var(--ink); }
+  .screen button.alt:hover { background: rgba(255, 255, 255, 0.24); }
+  .screen .foot { margin-top: 16px; font-size: 11px; color: rgba(184, 201, 218, 0.6); letter-spacing: 1px; }
+
+  #title .card { max-width: 720px; }
+  #complete .story { color: var(--sky); font-style: italic; font-size: 16px; }
+  #complete .reward { color: var(--mint); font-size: 20px; font-weight: bold; }
+
+  #shop .card { max-width: 460px; }
+  #shop .shoprow {
+    pointer-events: auto;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+    margin: 6px 0;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+  }
+  #shop .shoprow span.price { color: var(--gold); font-weight: bold; }
+  #shop button { margin: 0; padding: 6px 14px; font-size: 13px; }
+
+  #busted h2 { color: #ff6b57; }
+  #wasted h2 { color: #d0433a; }
+
+  #booterror {
+    position: fixed; inset: 0; z-index: 50;
+    display: none;
+    padding: 40px;
+    background: #10151d;
+    color: #ffd0c4;
+    font-family: monospace;
+    font-size: 14px;
+    white-space: pre-wrap;
+  }
+  #booterror.show { display: block; }
 </style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.min.js"
+  }
+}
+</script>
 </head>
 <body>
-<canvas id="game"></canvas>
-<div id="hud" class="hidden">
-  <div id="objective" class="panel-bg"><b>Objective</b><span id="objtext"></span></div>
-  <div id="stars"></div>
-  <canvas id="minimap" width="190" height="190"></canvas>
-  <div id="money" class="panel-bg">$0</div>
-  <div id="vitals"><div id="hpbar"><div id="hpfill"></div></div></div>
-  <div id="gun" class="panel-bg"></div>
-  <div id="speed"></div>
-  <div id="prompt" class="panel-bg"></div>
-  <div id="dialog" class="panel-bg hidden"></div>
-</div>
-<div id="vignette"></div>
+<div id="app"></div>
 
-<div id="start" class="overlay">
+<div id="hud">
+  <div id="topbar" class="panel">
+    <div id="stars"></div>
+    <div id="money">$0</div>
+  </div>
+
+  <div id="vitals">
+    <div id="healthbar" class="bar"><i></i></div>
+    <div id="armorbar" class="bar"><i></i></div>
+  </div>
+
+  <div id="objective"></div>
+  <div id="timer"></div>
+  <div id="toasts"></div>
+
+  <canvas id="minimap" width="180" height="180"></canvas>
+
+  <div id="weaponbox" class="panel"><span id="weapon">Pistol</span> · <span id="ammotext">∞</span></div>
+  <div id="speed" class="panel">0 km/h</div>
+
+  <div id="crosshair"></div>
+</div>
+
+<div id="title" class="screen show">
   <div class="card">
     <h1>SOLARA BAY</h1>
-    <h2>an open-world crime story in your browser</h2>
-    <p>Solara Bay, 2026. The bay is bright, the rent is due, and Mara Vox wants her money back. Work the streets on foot or behind the wheel: run her errands, drive a cab for fares, and stay out of the police's way — or don't.</p>
+    <div class="tagline">Sun, chrome, and one last job.</div>
+    <p>Palm Ward and Meridian, one warm afternoon. A coupe, a favour, and a bay that never asks questions.</p>
     <div class="controls">
-      <b>W A S D</b><span>move / drive</span>
-      <b>Mouse</b><span>look (click the game to lock)</span>
-      <b>Shift</b><span>sprint</span>
-      <b>Space</b><span>jump / handbrake</span>
-      <b>E</b><span>enter or exit a car, talk</span>
-      <b>Click</b><span>shoot</span>
-      <b>R</b><span>reload</span>
-      <b>B</b><span>shop (at the mart)</span>
-      <b>Esc</b><span>pause</span>
+      <b>WASD</b><span>Move on foot / drive</span>
+      <b>Mouse</b><span>Look around</span>
+      <b>Shift</b><span>Sprint</span>
+      <b>E</b><span>Enter / steal a car</span>
+      <b>F</b><span>Fire weapon</span>
+      <b>T</b><span>Taxi fares</span>
+      <b>Escape</b><span>Pause</span>
     </div>
-    <button id="btnNew">New game</button>
-    <button id="btnContinue" class="ghost hidden">Continue</button>
+    <div>
+      <button id="btn-continue" style="display:none">CONTINUE</button>
+      <button id="btn-new" class="alt">NEW GAME</button>
+    </div>
+    <div class="foot">v is for Vesper</div>
   </div>
 </div>
-<div id="pause" class="overlay hidden"><div class="card"><h1 style="font-size:28px">PAUSED</h1><p>Press Esc or click resume.</p><button id="btnResume">Resume</button></div></div>
-<div id="busted" class="overlay hidden"><div class="card"><div class="big">BUSTED</div><p>The Solara Bay police took their cut. You wake up at the clinic.</p></div></div>
-<div id="wasted" class="overlay hidden"><div class="card"><div class="big">WASTED</div><p>You wake up at the clinic, lighter by $100.</p></div></div>
-<div id="mdone" class="overlay hidden"><div class="card"><h1 style="font-size:26px" id="mdtitle">MISSION COMPLETE</h1><p id="mdtext"></p><button id="btnOk">Nice</button></div></div>
-<div id="shop" class="overlay hidden"><div class="card" style="text-align:left"><h1 style="font-size:24px">SOLARA MART</h1>
-  <div class="shopitem"><span><b>1</b> — Medkit (full HP)</span><span>$50</span></div>
-  <div class="shopitem"><span><b>2</b> — Pistol ammo (+24)</span><span>$40</span></div>
-  <div class="shopitem"><span><b>3</b> — Repair your car</span><span>$120</span></div>
-  <p>Press B to close.</p></div></div>
 
-<script type="importmap">{ "imports": { "three": "./vendor/three/three.module.min.js" } }</script>
+<div id="pause" class="screen">
+  <div class="card">
+    <h2>PAUSED</h2>
+    <div class="controls">
+      <b>WASD</b><span>Move / drive</span>
+      <b>Shift</b><span>Sprint</span>
+      <b>E</b><span>Enter / leave car</span>
+      <b>F</b><span>Fire</span>
+      <b>T</b><span>Taxi fares</span>
+    </div>
+    <p id="savestatus">Progress saves automatically.</p>
+    <button id="btn-resume">RESUME</button>
+  </div>
+</div>
+
+<div id="shop" class="screen">
+  <div class="card">
+    <h2>VINE MART</h2>
+    <p>Cold drinks, warm cash, and things the sign does not advertise.</p>
+    <div class="shoprow"><span>Rifle</span><span class="price">$600</span><button id="buy-rifle">BUY</button></div>
+    <div class="shoprow"><span>Ammo +60</span><span class="price">$100</span><button id="buy-ammo">BUY</button></div>
+    <div class="shoprow"><span>Armor</span><span class="price">$250</span><button id="buy-armor">BUY</button></div>
+    <div class="shoprow"><span>Medkit</span><span class="price">$50</span><button id="buy-medkit">BUY</button></div>
+    <p id="shopmoney">Cash: $0</p>
+    <button id="btn-shop-close" class="alt">CLOSE</button>
+  </div>
+</div>
+
+<div id="complete" class="screen">
+  <div class="card">
+    <h2 id="complete-title">MISSION COMPLETE</h2>
+    <p class="story" id="complete-story"></p>
+    <p class="reward" id="complete-reward"></p>
+    <button id="btn-next">NEXT MISSION</button>
+  </div>
+</div>
+
+<div id="busted" class="screen">
+  <div class="card">
+    <h2>BUSTED</h2>
+    <p>The station books you, takes a fee, and lets you walk before the sun drops.</p>
+    <p class="reward" id="busted-fee">Fee: $150</p>
+    <button id="btn-busted">WALK OUT</button>
+  </div>
+</div>
+
+<div id="wasted" class="screen">
+  <div class="card">
+    <h2>WASTED</h2>
+    <p>Cedar View patches you up and sends a bill.</p>
+    <p class="reward" id="wasted-fee">Fee: $100</p>
+    <button id="btn-wasted">LEAVE HOSPITAL</button>
+  </div>
+</div>
+
+<div id="booterror"></div>
+
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

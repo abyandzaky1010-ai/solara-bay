@@ -1,14 +1,59 @@
-// Sun-soaked day palette for Solara Bay: warm sun, blue sky, pale buildings, green park, blue bay.
-export const PAL = {
-  sky: 0x9fd4f5, fog: 0xd6e9f2, sun: 0xfff1cf,
-  hemiSky: 0xcfe6ff, hemiGround: 0x9aa87e,
-  ground: 0xa8c47e, sand: 0xe9d9a4, road: 0x41454d, lane: 0xd8d3c0,
-  walk: 0xbcb5a5, park: 0x63b264, water: 0x2f9fd0, pier: 0x9a7648,
-  builds: [0xf4e7d3, 0xecd0ac, 0xdbe8f4, 0xf2bfa2, 0xd3e2c9, 0xf6ddba, 0xe9e4f2, 0xf8f4ea],
-  trim: [0xe07850, 0x5aa0d8, 0x69a86b, 0xd9a441, 0xb07cc8],
-  cars: [0xd84b4b, 0x4b7fd8, 0xe8c832, 0x48b8a0, 0xc9c9d2, 0x7a5ac8, 0xe87898, 0x35353d],
-  taxi: 0xf5c518, police: 0x27324e, gang: 0x5a2e2e,
-  windowDark: '#2c3e50', windowLit: '#ffe9a8',
-  pedShirts: [0xc86a4a, 0x6a8ac8, 0xc8b04a, 0x7ac87a, 0xb06ac8, 0xe0e0e0, 0xd87a9a],
-  accent: '#ffc857',
+// Solara Bay — the single colour vocabulary for the whole city, plus a small
+// cached material factory so thousands of boxes share a handful of materials.
+
+import * as THREE from 'three';
+
+export const C = {
+  sky: 0xbfe3ff,
+  horizon: 0xeaf6ff,
+  sun: 0xfff3d6,
+  sand: 0xd8cdb2,
+  asphalt: 0x3a3f46,
+  roadline: 0xf3e9c8,
+  sidewalk: 0xcfc6b8,
+  grass: 0x6fae5e,
+  water: 0x3d8ea8,
+  glass: [0x7fa8c9, 0x9fc3d9, 0xb7d6e8],
+  steel: [0x8f9aa6, 0xa8b2bc],
+  stucco: [0xe8b7a0, 0xf2d0a4, 0xd9a8a0, 0xc9d2e8],
+  roof: 0xc96f4a,
+  trunk: 0x8a6f52,
+  frond: 0x3f8f4f,
+  sport: 0xd94f4f,
+  sedan: 0x8ea3b8,
+  taxi: 0xf7c948,
+  copbody: 0xeef2f5,
+  coptrim: 0x2b3b55,
+  barRed: 0xff3b30,
+  barBlue: 0x2f6bff,
+  skin: [0xd9a066, 0xb07a4f, 0xf2c49b],
+  shirt: [0xe07a5f, 0x35506b, 0x4f7a5e, 0x8a5fa8],
+  pants: [0x35506b, 0x4a4a4a, 0x7a6a4f, 0x274a44],
+  beacon: 0xffd24a,
+  marker: 0xffd24a,
 };
+
+const cache = new Map();
+
+/**
+ * Shared material per (hex, variant). flat → unlit, glassy → shinier.
+ */
+export function material(hex, { flat = false, glassy = false } = {}) {
+  const key = `${hex}:${flat ? 'f' : glassy ? 'g' : 'l'}`;
+  let mat = cache.get(key);
+  if (mat) return mat;
+
+  if (flat) {
+    mat = new THREE.MeshBasicMaterial({ color: hex });
+  } else if (glassy) {
+    mat = new THREE.MeshPhongMaterial({
+      color: hex,
+      shininess: 80,
+      specular: 0xffffff,
+    });
+  } else {
+    mat = new THREE.MeshLambertMaterial({ color: hex });
+  }
+  cache.set(key, mat);
+  return mat;
+}
