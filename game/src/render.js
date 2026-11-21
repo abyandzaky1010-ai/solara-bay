@@ -1,258 +1,206 @@
-// Solara Bay — transient effects: tracers, muzzle flashes, explosions and smoke.
-// Everything is pooled at boot so a firefight never allocates a mesh.
+// Solara Bay — every transient spark in the world: tracers, muzzle flashes,
+// explosions and smoke. One clear job, and one rule: nothing allocates at
+// runtime. A fixed pool of sprites is built at start-up and recycled forever.
 
 import * as THREE from 'three';
-import { C } from './palette.js';
 
 const POOL_SIZE = 96;
 const TRACER_TTL = 0.06;
 const MUZZLE_TTL = 0.05;
-const BLAST_TTL = 0.7;
+const EXPLOSION_TTL = 0.7;
 const SMOKE_TTL = 1.2;
-const DEBRIS_TTL = 0.55;
-const HURT_MS = 200;
+const SHARDS = 10;
+const FLASH_TTL = 0.22;
+const HURT_CLASS_MS = 200;
 
-// Quad orientation helper: planes are built flat on XZ and billboarded by the
-// update pass, which is cheap and keeps every sprite readable from any angle.
-const QUAD = new THREE.PlaneGeometry(1, 1);
+// Hot at the core, sooty at the edge.
+const FIRE_HOT = 0xfff1b8;
+const FIRE_MID = 0xff8a3c;
+const FIRE_DARK = 0xb5401c;
+const SOOT = 0x2a2624;
+const SMOKE = 0x9b968e;
+const MUZZLE = 0xffd77a;
+const TRACER = 0xfff3c8;
 
-const FX = {
-  ready: false,
-  scene: null,
-  pool: [],
-  cursor: 0,
-  hurtTimer: null,
-};
+const pool = [];
+let quadGeo = null;
+let boxGeo = null;
+let ready = false;
+let hurtUntil = 0;
 
-/** Allocate the sprite pool once; safe to call twice. */
+/* --------------------------------------------------------------------- the pool */
+
+function makeSprite() {
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(quadGeo, mat);
+  mesh.visible = false;
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 4;
+  return { mesh, mat, alive: false, t: 0, ttl: 0, grow: 0, gravity: 0, vx: 0, vy: 0, vz: 0 };
+}
+
+/** Build the pool into the scene. Idempotent: a second call adds nothing twice. */
 export function initEffects(W) {
-  if (!W || !W.scene) return FX;
-  if (FX.ready) return FX;
-  FX.scene = W.scene;
-
-  for (let i = 0; i < POOL_SIZE; i++) {
-    const material = new THREE.MeshBasicMaterial({
-      color: C.marker,
-      transparent: true,
-      opacity: 1,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      fog: false,
-    });
-    const mesh = new THREE.Mesh(QUAD, material);
-    mesh.visible = false;
-    mesh.frustumCulled = false;
-    mesh.renderOrder = 3;
-    W.scene.add(mesh);
-    FX.pool.push({
-      mesh,
-      material,
-      alive: false,
-      kind: 'quad',
-      t: 0,
-      ttl: 1,
-      vel: new THREE.Vector3(),
-      grow: 0,
-      gravity: 0,
-      startOpacity: 1,
-      spin: 0,
-      lift: 0,
-    });
+  if (!W || !W.scene) return { size: 0 };
+  if (!ready) {
+    quadGeo = new THREE.PlaneGeometry(1, 1);
+    boxGeo = new THREE.BoxGeometry(1, 1, 1);
+    for (let i = 0; i < POOL_SIZE; i++) pool.push(makeSprite());
+    ready = true;
   }
-  FX.ready = true;
-  return FX;
+  for (const s of pool) if (!s.mesh.parent) W.scene.add(s.mesh);
+  return { size: pool.length };
 }
 
-/** Take the next free sprite, stealing the oldest one if the pool is full. */
-function take() {
-  for (let i = 0; i < POOL_SIZE; i++) {
-    const slot = FX.pool[(FX.cursor + i) % POOL_SIZE];
-    if (!slot.alive) {
-      FX.cursor = (FX.cursor + i + 1) % POOL_SIZE;
-      slot.alive = true;
-      slot.mesh.visible = true;
-      return slot;
+/** Claim a dead sprite for ttl seconds; when the pool is dry, recycle the oldest. */
+function claim(ttl) {
+  let s = null;
+  for (let i = 0; i < pool.length; i++) {
+    if (!pool[i].alive) {
+      s = pool[i];
+      break;
     }
+    if (!s || pool[i].t > s.t) s = pool[i];
   }
-  const slot = FX.pool[FX.cursor];
-  FX.cursor = (FX.cursor + 1) % POOL_SIZE;
-  slot.alive = true;
-  slot.mesh.visible = true;
-  return slot;
+  s.alive = true;
+  s.t = 0;
+  s.ttl = ttl;
+  s.grow = 0;
+  s.gravity = 0;
+  s.vx = s.vy = s.vz = 0;
+  s.mesh.visible = true;
+  s.mat.opacity = 1;
+  s.mesh.rotation.set(0, 0, 0);
+  s.mesh.scale.set(1, 1, 1);
+  if (s.mesh.geometry !== quadGeo) s.mesh.geometry = quadGeo;
+  return s;
 }
 
-function retire(slot) {
-  slot.alive = false;
-  slot.mesh.visible = false;
+/** A square of colour, sized in metres, fading out over its ttl. */
+function quad(at, hex, size, ttl, grow) {
+  const s = claim(ttl);
+  s.mat.color.setHex(hex);
+  s.grow = grow || 0;
+  s.mesh.position.set(at.x, at.y || 0, at.z);
+  s.mesh.scale.set(size, size, 1);
+  return s;
 }
 
-/**
- * Fire a thin box between two points. aa/bb are optional {x,y,z} object or
- * vector; missing y defaults to chest height.
- */
+/* ------------------------------------------------------------------- emitters */
+
+/** A hot line from a muzzle to whatever the round met. */
 export function spawnTracer(a, b) {
-  if (!FX.ready || !a || !b) return;
-  const ax = a.x;
-  const ay = a.y === undefined ? 1.3 : a.y;
-  const az = a.z;
-  const bx = b.x;
-  const by = b.y === undefined ? 1.1 : b.y;
-  const bz = b.z;
-
-  const slot = take();
-  slot.kind = 'tracer';
-  slot.t = 0;
-  slot.ttl = TRACER_TTL;
-  slot.vel.set(0, 0, 0);
-  slot.gravity = 0;
-  slot.grow = 0;
-  slot.opacity0 = 0.95;
-  slot.spin = 0;
-
-  const dx = bx - ax;
-  const dy = by - ay;
-  const dz = bz - az;
-  const len = Math.max(0.4, Math.hypot(dx, dy, dz));
-
-  slot.material.color.setHex(C.roadline);
-  slot.material.opacity = 0.95;
-  slot.mesh.rotation.set(0, 0, 0);
-  slot.mesh.quaternion.setFromUnitVectors(
-    new THREE.Vector3(0, 0, 1),
-    new THREE.Vector3(dx / len, dy / len, dz / len),
-  );
-  slot.mesh.scale.set(0.045, 0.045, len);
-  slot.mesh.position.set(ax + dx / 2, ay + dy / 2, az + dz / 2);
+  if (!ready || !a || !b) return;
+  const s = claim(TRACER_TTL);
+  s.mesh.geometry = boxGeo;
+  s.mat.color.setHex(TRACER);
+  s.mat.opacity = 0.95;
+  const dx = b.x - a.x, dy = (b.y || 0) - (a.y || 0), dz = b.z - a.z;
+  s.mesh.position.set(a.x + dx * 0.5, (a.y || 0) + dy * 0.5, a.z + dz * 0.5);
+  s.mesh.scale.set(0.045, 0.045, Math.max(0.4, Math.hypot(dx, dy, dz)));
+  s.mesh.rotation.set(0, Math.atan2(dx, dz), 0);
 }
 
-/** Small hot quad at the barrel; reads as the flash in a screenshot. */
+/** Two frames of star at the barrel. */
 export function spawnMuzzle(pos) {
-  if (!FX.ready || !pos) return;
-  const slot = take();
-  slot.kind = 'quad';
-  slot.t = 0;
-  slot.ttl = MUZZLE_TTL;
-  slot.vel.set(0, 0, 0);
-  slot.gravity = 0;
-  slot.grow = 9;
-  slot.opacity0 = 1;
-  slot.material.color.setHex(0xfff0b0);
-  slot.material.opacity = 1;
-  slot.mesh.position.set(pos.x, pos.y === undefined ? 1.35 : pos.y, pos.z);
-  slot.mesh.scale.setScalar(0.55);
-  billboard(slot.mesh);
+  if (!ready || !pos) return;
+  const s = quad(pos, MUZZLE, 0.5, MUZZLE_TTL, -6);
+  s.mesh.position.y = pos.y || 1.2;
+  s.mat.opacity = 0.95;
 }
 
-/** Ten debris quads plus one white-hot flash. */
+/** A car goes up: one white core, ten shards of fire and soot, one rising cloud. */
 export function spawnExplosion(pos) {
-  if (!FX.ready || !pos) return;
-  const px = pos.x;
-  const py = pos.y === undefined ? 1.0 : pos.y;
-  const pz = pos.z;
+  if (!ready || !pos) return;
+  const y = pos.y !== undefined ? pos.y : 1;
+  quad({ x: pos.x, y: y + 1.2, z: pos.z }, FIRE_HOT, 7, FLASH_TTL, 3.5);
 
-  for (let i = 0; i < 10; i++) {
-    const slot = take();
-    slot.kind = 'debris';
-    slot.t = 0;
-    slot.ttl = BLAST_TTL * (0.55 + Math.random() * 0.45);
-    const ang = (i / 10) * Math.PI * 2 + Math.random() * 0.25;
-    const spd = 3 + Math.random() * 7;
-    slot.vel.set(Math.cos(ang) * spd, 2 + Math.random() * 5, Math.sin(ang) * spd);
-    slot.gravity = 12;
-    slot.grow = 0.6;
-    slot.opacity0 = 0.9;
-    const heat = i % 3;
-    slot.material.color.setHex(heat === 0 ? 0xffd27a : heat === 1 ? 0xff7a2a : 0x4a3a30);
-    slot.material.opacity = 0.9;
-    slot.mesh.position.set(px, py, pz);
-    slot.mesh.scale.setScalar(0.6 + Math.random() * 0.7);
-    billboard(slot.mesh);
+  for (let i = 0; i < SHARDS; i++) {
+    const a = (i / SHARDS) * Math.PI * 2 + Math.random() * 0.5;
+    const hex = i % 3 === 0 ? SOOT : i % 2 === 0 ? FIRE_MID : FIRE_DARK;
+    const shard = quad({ x: pos.x, y: y + 0.8, z: pos.z }, hex, 1.3 + Math.random() * 1.5, EXPLOSION_TTL, 0.6);
+    shard.vx = Math.cos(a) * (5 + Math.random() * 9);
+    shard.vy = 4 + Math.random() * 7;
+    shard.vz = Math.sin(a) * (5 + Math.random() * 9);
+    shard.gravity = 16;
   }
 
-  const flash = take();
-  flash.kind = 'quad';
-  flash.t = 0;
-  flash.ttl = BLAST_TTL;
-  flash.vel.set(0, 1.2, 0);
-  flash.gravity = -0.6;
-  flash.grow = 16;
-  flash.opacity0 = 0.95;
-  flash.material.color.setHex(0xfff2c2);
-  flash.material.opacity = 0.95;
-  flash.mesh.position.set(px, py + 0.6, pz);
-  flash.mesh.scale.setScalar(1.2);
-  billboard(flash.mesh);
+  const cloud = quad({ x: pos.x, y: y + 2.2, z: pos.z }, SMOKE, 6, EXPLOSION_TTL, 1.4);
+  cloud.vy = 1.4;
 }
 
-/** Grey puff that drifts up and thins out (car smoke, bullet dust). */
+/** One slow grey breath, for smoking engines and tired bumpers. */
 export function spawnSmokePuff(pos) {
-  if (!FX.ready || !pos) return;
-  const slot = take();
-  slot.kind = 'quad';
-  slot.t = 0;
-  slot.ttl = SMOKE_TTL;
-  slot.vel.set((Math.random() - 0.5) * 0.7, 0.55 + Math.random() * 0.5, (Math.random() - 0.5) * 0.7);
-  slot.gravity = -0.1;
-  slot.grow = 2.4;
-  slot.opacity0 = 0.42;
-  slot.material.color.setHex(0x9aa3ab);
-  slot.material.opacity = 0.42;
-  slot.mesh.position.set(pos.x, pos.y === undefined ? 1.0 : pos.y, pos.z);
-  slot.mesh.scale.setScalar(0.7);
-  billboard(slot.mesh);
+  if (!ready || !pos) return;
+  const s = quad(pos, SMOKE, 1.6, SMOKE_TTL, 1.8);
+  s.mesh.position.y = (pos.y || 1) + 0.4;
+  s.vy = 1.5;
+  s.vx = (Math.random() - 0.5) * 0.6;
+  s.vz = (Math.random() - 0.5) * 0.6;
+  s.mat.opacity = 0.5;
 }
 
-/** Red edge flash: one class toggle, cleared by a timer. */
+/* ------------------------------------------------------------------- vignette */
+
+/** Flash the red edge of the screen for a moment: the CSS already knows 'hurt'. */
 export function flashDamage() {
-  if (typeof document === 'undefined') return;
-  const hud = document.getElementById('hud');
+  const hud = typeof document !== 'undefined' ? document.getElementById('hud') : null;
   if (!hud) return;
   hud.classList.remove('hurt');
-  // Restart the CSS animation even when hits land a frame apart.
-  void hud.offsetWidth;
+  void hud.offsetWidth; // restart the fade on back-to-back hits
   hud.classList.add('hurt');
-  if (FX.hurtTimer !== null) clearTimeout(FX.hurtTimer);
-  FX.hurtTimer = setTimeout(() => {
-    hud.classList.remove('hurt');
-    FX.hurtTimer = null;
-  }, HURT_MS);
+  hurtUntil = Date.now() + HURT_CLASS_MS;
 }
 
-function billboard(mesh) {
-  // Orientation is settled per frame in billboardTo(); quads start camera-facing.
-  mesh.rotation.set(0, 0, 0);
+/** Age the vignette class out; safe to call every frame. */
+export function updateHurtFx() {
+  if (!hurtUntil || Date.now() < hurtUntil) return;
+  hurtUntil = 0;
+  const hud = typeof document !== 'undefined' ? document.getElementById('hud') : null;
+  if (hud) hud.classList.remove('hurt');
 }
 
-/** Advance every live sprite: move, grow, fade, retire. */
-export function updateEffects(W, dt) {
-  if (!FX.ready) return;
-  const cam = W && W.camera ? W.camera : null;
-  for (let i = 0; i < POOL_SIZE; i++) {
-    const slot = FX.pool[i];
-    if (!slot.alive) continue;
-    slot.t += dt;
-    const k = slot.t / slot.ttl;
-    if (k >= 1) { retire(slot); continue; }
+/* ----------------------------------------------------------------------- tick */
 
-    const m = slot.mesh;
-    slot.vel.y -= slot.gravity * dt;
-    m.position.x += slot.vel.x * dt;
-    m.position.y += slot.vel.y * dt;
-    m.position.z += slot.vel.z * dt;
-    if (slot.gravity > 0 && m.position.y < 0.12) {
-      m.position.y = 0.12;
-      slot.vel.y = Math.abs(slot.vel.y) * 0.25;
-      slot.vel.x *= 0.7;
-      slot.vel.z *= 0.7;
+/** Move, grow and fade every live sprite; hide the ones whose time is up. */
+export function updateEffects(ignored, dt) {
+  if (!ready) return;
+  const step = Math.min(dt || 0, 0.1);
+  for (const s of pool) {
+    if (!s.alive) continue;
+    s.t += step;
+    if (s.t >= s.ttl) {
+      s.alive = false;
+      s.mesh.visible = false;
+      s.mat.opacity = 0;
+      continue;
     }
-    if (slot.grow) m.scale.multiplyScalar(1 + slot.grow * dt);
-
-    if (slot.kind !== 'tracer') billboardTo(m, cam);
-    slot.material.opacity = slot.opacity0 * (1 - k) * (1 - k * 0.2);
+    const p = s.mesh.position;
+    if (s.gravity) s.vy -= s.gravity * step;
+    p.x += s.vx * step;
+    p.y += s.vy * step;
+    p.z += s.vz * step;
+    if (p.y < 0.05) {
+      p.y = 0.05;
+      if (s.gravity) s.vy *= -0.3;
+      s.vx *= 0.7;
+      s.vz *= 0.7;
+    }
+    if (s.grow) s.mesh.scale.multiplyScalar(Math.max(0.05, 1 + s.grow * step));
+    s.mat.opacity = (1 - s.t / s.ttl) ** 2;
   }
+  updateHurtFx();
 }
 
-/** Flat quads square up to the camera so they never vanish edge-on. */
-function billboardTo(mesh, cam) {
-  if (cam) mesh.lookAt(cam.position.x, cam.position.y, cam.position.z);
+/** How many sprites are burning right now (debug and shot harness). */
+export function effectStats() {
+  let live = 0;
+  for (const s of pool) if (s.alive) live++;
+  return { live, size: pool.length };
 }

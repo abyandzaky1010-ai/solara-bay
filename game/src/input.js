@@ -1,12 +1,8 @@
-// Solara Bay — keyboard, mouse and pointer-lock plumbing. No three.js here;
-// this module only knows about DOM events and produces per-frame deltas.
+// Solara Bay — keyboard, mouse and pointer-lock input. Pure DOM, no Three.js.
 
-const GAME_KEYS = new Set([
-  'KeyW', 'KeyA', 'KeyS', 'KeyD',
-  'KeyE', 'KeyF', 'KeyT', 'KeyR',
-  'ShiftLeft', 'ShiftRight',
-  'Space', 'Escape',
-  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+const WATCHED = new Set([
+  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyF', 'KeyT', 'KeyR',
+  'ShiftLeft', 'ShiftRight', 'Space', 'Escape',
 ]);
 
 export function createInput(canvas) {
@@ -16,100 +12,86 @@ export function createInput(canvas) {
   let dy = 0;
   let wheel = 0;
 
-  const input = {
+  const I = {
     keys,
     locked: false,
-    aimed: false,
 
     down(code) {
       return keys.has(code);
     },
 
-    /** True once per physical press; consuming clears it. */
     wasPressed(code) {
       if (!pressed.has(code)) return false;
       pressed.delete(code);
       return true;
     },
 
-    /** Accumulated this-frame mouse motion plus wheel steps. */
     mouse() {
       return { dx, dy, wheel };
     },
 
-    /** End-of-frame reset of the per-frame accumulators. */
-    endFrame() {
-      dx = 0;
-      dy = 0;
-      wheel = 0;
-    },
-
     lock() {
-      if (typeof canvas.requestPointerLock !== 'function') return;
-      try {
-        const p = canvas.requestPointerLock();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
-      } catch {
-        /* pointer lock may be refused; keyboard still works */
+      if (typeof canvas.requestPointerLock === 'function') {
+        const result = canvas.requestPointerLock();
+        if (result && typeof result.catch === 'function') result.catch(() => {});
       }
     },
 
     unlock() {
-      if (document.pointerLockElement === canvas && document.exitPointerLock) {
-        document.exitPointerLock();
-      }
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+    },
+
+    endFrame() {
+      dx = 0;
+      dy = 0;
+      wheel = 0;
+      pressed.clear();
     },
   };
 
-  window.addEventListener('keydown', (e) => {
-    if (GAME_KEYS.has(e.code)) e.preventDefault();
-    if (e.repeat) return;
-    keys.add(e.code);
-    pressed.add(e.code);
-  });
+  function onKeyDown(ev) {
+    if (WATCHED.has(ev.code)) ev.preventDefault();
+    if (ev.repeat) return;
+    keys.add(ev.code);
+    pressed.add(ev.code);
+  }
 
-  window.addEventListener('keyup', (e) => {
-    keys.delete(e.code);
-  });
+  function onKeyUp(ev) {
+    if (WATCHED.has(ev.code)) ev.preventDefault();
+    keys.delete(ev.code);
+  }
 
-  window.addEventListener('blur', () => {
-    keys.clear();
-    pressed.clear();
-  });
+  function onMouseMove(ev) {
+    if (!I.locked) return;
+    dx += ev.movementX || 0;
+    dy += ev.movementY || 0;
+  }
 
-  canvas.addEventListener('mousedown', () => {
-    if (!input.locked) input.lock();
-    input.aimed = true;
-  });
+  function onWheel(ev) {
+    if (!I.locked) return;
+    ev.preventDefault();
+    wheel += Math.sign(ev.deltaY);
+  }
 
-  window.addEventListener('mouseup', () => {
-    input.aimed = false;
-  });
-
-  window.addEventListener('mousemove', (e) => {
-    if (!input.locked) return;
-    dx += e.movementX || 0;
-    dy += e.movementY || 0;
-  });
-
-  window.addEventListener(
-    'wheel',
-    (e) => {
-      wheel += Math.sign(e.deltaY);
-      if (input.locked) e.preventDefault();
-    },
-    { passive: false },
-  );
-
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-
-  document.addEventListener('pointerlockchange', () => {
-    input.locked = document.pointerLockElement === canvas;
-    if (!input.locked) {
+  function onLockChange() {
+    I.locked = document.pointerLockElement === canvas;
+    if (!I.locked) {
       keys.clear();
       pressed.clear();
     }
-  });
+  }
 
-  return input;
+  function onBlur() {
+    keys.clear();
+    pressed.clear();
+  }
+
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('wheel', onWheel, { passive: false });
+  document.addEventListener('pointerlockchange', onLockChange);
+
+  return I;
 }

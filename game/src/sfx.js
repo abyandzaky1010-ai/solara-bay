@@ -1,199 +1,210 @@
-// Solara Bay — all sound is synthesised with WebAudio: no files, no network.
-// Every entry point is a no-op before a user gesture, or if there is no AudioContext.
 
-let ac = null, master = null, noiseBuf = null, tried = false;
-const eng = { on: false }, wail = { on: false, beat: 0, phase: 0 };
-const VOLUME = 0.25, SIREN_HI = 659, SIREN_LO = 494, SIREN_SWAP = 0.45;
-
-/** The context, built on first use; null when audio is unavailable. */
-const audio = () => {
-  if (tried) return ac;
-  tried = true;
-  try {
-    const Ctor = window.AudioContext || window.webkitAudioContext;
-    if (!Ctor) return null;
-    ac = new Ctor();
-    master = ac.createGain();
-    master.gain.value = VOLUME;
-    master.connect(ac.destination);
-    noiseBuf = makeNoise(ac, 0.8);
-  } catch (err) { ac = null; }
-  return ac;
-};
-
-/** Softened noise: filtered white is warmer than static. */
-function makeNoise(context, seconds) {
-  const len = Math.floor(context.sampleRate * seconds);
-  const buf = context.createBuffer(1, len, context.sampleRate);
-  const data = buf.getChannelData(0);
-  let last = 0;
-  for (let i = 0; i < len; i++) {
-    const w = Math.random() * 2 - 1;
-    last = last * 0.55 + w * 0.45;
-    data[i] = last;
+const MASTER = 0.25, IDLE_HZ = 50, TOP_HZ = 120;
+const SIREN_HI = 659, SIREN_LO = 494, SIREN_SWITCH = 0.45;
+let ctx = null, master = null, noise = null, engine = null, wailer = null;
+let wanted = false, locked = true;
+function ensure() {
+  if (ctx) {
+    if (ctx.state === 'suspended' && !locked) ctx.resume().catch(() => {});
+    return ctx;
   }
-  return buf;
-}
-
-/** First gesture: open the context if it is still closed. */
-export function initSfx() {
-  const a = audio();
-  if (!a) return;
-  try { if (a.state === 'suspended' && a.resume) a.resume(); } catch (err) { /* retry later */ }
-}
-
-function unlock() {
-  if (!ac) return null;
-  if (ac.state === 'suspended') {
-    try { ac.resume(); } catch (err) { return null; }
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    ctx = new AC();
+    master = ctx.createGain();
+    master.gain.value = MASTER;
+    master.connect(ctx.destination);
+    const frames = Math.floor(ctx.sampleRate * 1.2), data = (noise = ctx.createBuffer(1, frames, ctx.sampleRate)).getChannelData(0);
+    for (let i = 0; i < frames; i++) data[i] = Math.random() * 2 - 1;
+  } catch (err) {
+    ctx = null;
+    master = null;
   }
-  return ac;
+  return ctx;
 }
-
-/** Gain envelope: silent, up to peak, back down by dur. */
-function envelope(gain, peak, t0, dur, attack = 0.008) {
-  gain.gain.setValueAtTime(0.0001, t0);
-  gain.gain.exponentialRampToValueAtTime(Math.max(0.001, peak), t0 + attack);
-  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+function voice(level) {
+  const ac = ensure();
+  if (!ac || !master) return null;
+  const gain = ac.createGain();
+  gain.gain.value = level;
+  gain.connect(master);
+  return { ac, gain };
 }
-
-/** One enveloped oscillator; glide slides the pitch down over the note. */
-function tone(freq, dur, type, level, when = 0, glide = 0) {
-  const a = unlock();
-  if (!a) return;
-  const t0 = a.currentTime + when;
-  try {
-    const osc = a.createOscillator(), g = a.createGain();
-    osc.type = type || 'sine';
-    osc.frequency.setValueAtTime(freq, t0);
-    if (glide) osc.frequency.exponentialRampToValueAtTime(Math.max(20, glide), t0 + dur);
-    envelope(g, level, t0, dur);
-    osc.connect(g); g.connect(master);
-    osc.start(t0); osc.stop(t0 + dur + 0.03);
-  } catch (err) { /* stay silent */ }
+function hiss(level, seconds, cutoff, q, dropTo) {
+  const v = voice(level);
+  if (!v || !noise) return;
+  const { ac, gain } = v, now = ac.currentTime;
+  const src = ac.createBufferSource(), filter = ac.createBiquadFilter();
+  src.buffer = noise;
+  filter.type = q > 1 ? 'bandpass' : 'lowpass';
+  filter.frequency.setValueAtTime(cutoff, now);
+  if (dropTo) filter.frequency.exponentialRampToValueAtTime(Math.max(60, dropTo), now + seconds);
+  filter.Q.value = q;
+  gain.gain.setValueAtTime(level, now);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + seconds);
+  src.connect(filter);
+  filter.connect(gain);
+  src.start(now);
+  src.stop(now + seconds + 0.02);
+  src.onended = () => { try { gain.disconnect(); filter.disconnect(); } catch (err) { /* gone */ } };
 }
-
-/** Band-passed noise burst: impacts, grit, explosions. */
-function noise(dur, level, hz = 1800, when = 0) {
-  const a = unlock();
-  if (!a || !noiseBuf) return;
-  const t0 = a.currentTime + when;
-  try {
-    const src = a.createBufferSource(), bq = a.createBiquadFilter(), g = a.createGain();
-    src.buffer = noiseBuf; src.loop = true;
-    bq.type = 'bandpass'; bq.frequency.value = hz; bq.Q.value = 0.9;
-    envelope(g, level, t0, dur, 0.002);
-    src.connect(bq); bq.connect(g); g.connect(master);
-    src.start(t0); src.stop(t0 + dur + 0.02);
-  } catch (err) { /* ignore */ }
-}
-
-/* --------------------------------------------------------------- sound table */
-
-/** Shoot, then chime, cash, boom, crunch, horn, two jingles, cough and buzz. */
-const PLAY = {
-  shot: (rifle) => { noise(0.08, 0.5, rifle ? 2400 : 1800); tone(900, 0.07, 'square', 0.16, 0, rifle ? 1040 : 880); },
-  chime: () => { tone(660, 0.12, 'sine', 0.22); tone(880, 0.16, 'sine', 0.18, 0.09); },
-  cash: () => { tone(1180, 0.06, 'triangle', 0.16); tone(1560, 0.09, 'triangle', 0.13, 0.06); },
-  explode: () => { tone(60, 0.6, 'sine', 0.5, 0, 34); noise(0.6, 0.55, 700); noise(0.25, 0.3, 2600, 0.02); },
-  crash: () => { noise(0.16, 0.42, 320); tone(120, 0.12, 'square', 0.1, 0, 70); },
-  honk: () => { tone(440, 0.2, 'square', 0.14); tone(392, 0.2, 'square', 0.1); },
-  jingle: (win) => (win ? [523, 659, 784] : [523, 415, 311]).forEach((n, i) => tone(n, 0.16, 'triangle', 0.2, i * 0.12)),
-  engineSputter: () => { noise(0.12, 0.18, 500); tone(70, 0.1, 'sawtooth', 0.08, 0, 44); },
-  deny: () => tone(180, 0.16, 'square', 0.12),
-};
-
-/** Wrapped so every caller gets a no-op before the first gesture. */
-export const S = {};
-for (const [key, play] of Object.entries(PLAY)) S[key] = (...args) => { if (audio()) play(...args); };
-
-/* ------------------------------------------------------- engine & siren loops */
-
-/** A started oscillator wired through one gain into the master bus. */
-function voice(a, type, hz, level, ramp) {
-  const osc = a.createOscillator(), gain = a.createGain();
+function blip(type, fromHz, toHz, level, attack, hold, release) {
+  const v = voice(level);
+  if (!v) return;
+  const { ac, gain } = v, now = ac.currentTime, span = attack + hold, curve = gain.gain;
+  const osc = ac.createOscillator();
   osc.type = type;
-  osc.frequency.value = hz;
-  gain.gain.value = 0.0001;
-  gain.gain.setTargetAtTime(level, a.currentTime, ramp);
-  osc.connect(gain); gain.connect(master);
-  osc.start();
-  return { osc, gain };
+  osc.frequency.setValueAtTime(fromHz, now);
+  osc.frequency.linearRampToValueAtTime(toHz, now + span + release);
+  curve.setValueAtTime(0.0001, now);
+  curve.linearRampToValueAtTime(1, now + attack);
+  curve.setValueAtTime(1, now + span);
+  curve.exponentialRampToValueAtTime(0.0001, now + span + release);
+  osc.connect(gain);
+  osc.start(now);
+  osc.stop(now + span + release + 0.02);
+  osc.onended = () => { try { gain.disconnect(); } catch (err) { /* gone */ } };
 }
-
-/** Start the drone for the car the player just entered. */
+function notes(gain, ac, list, gap, tail) {
+  gain.gain.value = 1;
+  list.forEach((hz, i) => {
+    const at = ac.currentTime + i * gap;
+    const osc = ac.createOscillator(), env = ac.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(hz, at);
+    env.gain.setValueAtTime(0.0001, at);
+    env.gain.linearRampToValueAtTime(0.9, at + 0.01);
+    env.gain.exponentialRampToValueAtTime(0.0001, at + 0.01 + tail);
+    osc.connect(env);
+    env.connect(gain);
+    osc.start(at);
+    osc.stop(at + tail + 0.05);
+  });
+}
+function shot() {
+  hiss(0.55, 0.08, 2400, 0.9, 400);
+  blip('square', 900, 380, 0.18, 0.002, 0.01, 0.05);
+}
+function chime() {
+  const v = voice(0.2);
+  if (v) notes(v.gain, v.ac, [660, 880], 0.1, 0.16);
+}
+function explode() {
+  blip('sine', 60, 34, 0.55, 0.01, 0.18, 0.4);
+  hiss(0.6, 0.6, 1300, 0.6, 120);
+}
+function crash() {
+  hiss(0.5, 0.14, 700, 0.7, 180);
+  blip('triangle', 140, 70, 0.18, 0.002, 0.02, 0.1);
+}
+function honk() {
+  blip('square', 440, 440, 0.1, 0.008, 0.18, 0.02);
+}
+function jingle(win) {
+  const v = voice(0.18);
+  if (v) notes(v.gain, v.ac, win ? [523, 659, 784] : [440, 392, 330], 0.13, 0.15);
+}
+export const S = { shot, chime, explode, crash, honk, jingle };
 export function engineOn(kind) {
-  const a = audio();
-  if (!a || eng.on) return;
+  const ac = ensure();
+  if (!ac || !master) return;
+  engineOff();
   try {
-    const heavy = kind === 'police' || kind === 'sedan' ? 0.8 : 1;
-    eng.main = voice(a, 'sawtooth', 52 * heavy, 0.09, 0.25);
-    eng.sub = voice(a, 'square', 26 * heavy, 0.09, 0.25);
-    eng.filter = a.createBiquadFilter();
-    eng.filter.type = 'lowpass';
-    eng.filter.frequency.value = 420;
-    eng.filter.Q.value = 1.1;
-    // A tiny vibrato keeps the drone off a pure test tone.
-    eng.lfo = a.createOscillator();
-    eng.lfo.type = 'sine';
-    eng.lfo.frequency.value = 5.5;
-    eng.lfoGain = a.createGain();
-    eng.lfoGain.gain.value = 2.2;
-    eng.lfo.connect(eng.lfoGain);
-    eng.lfoGain.connect(eng.main.osc.frequency);
-    eng.filter.connect(eng.main.gain);
-    eng.lfo.start();
-    eng.on = true;
-  } catch (err) { eng.on = false; }
+    const osc = ac.createOscillator(), filter = ac.createBiquadFilter(), gain = ac.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.value = kind === 'police' ? 58 : kind === 'sport' ? 66 : 54;
+    filter.type = 'lowpass';
+    filter.frequency.value = 520;
+    gain.gain.value = 0.0001;
+    gain.gain.linearRampToValueAtTime(0.07, ac.currentTime + 0.25);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(master);
+    osc.start();
+    engine = { osc, filter, gain, kind };
+  } catch (err) {
+    engine = null;
+  }
 }
-
-/** Pitch, filter and level open up with speed01 (0 idle .. 1 flat out). */
 export function engineUpdate(speed01, dt) {
-  if (!eng.on || !ac) return;
+  if (!engine || !ctx) return;
   try {
-    const v = Math.max(0, Math.min(1, speed01 || 0)), now = ac.currentTime;
-    const glide = Math.max(0.02, dt * 3), hz = 50 + v * 70;
-    eng.main.osc.frequency.setTargetAtTime(hz, now, glide);
-    eng.sub.osc.frequency.setTargetAtTime(hz * 0.5, now, glide);
-    eng.filter.frequency.setTargetAtTime(380 + v * 1500, now, glide);
-    eng.main.gain.gain.setTargetAtTime(0.06 + v * 0.05, now, 0.08);
-  } catch (err) { /* ignore */ }
+    const now = ctx.currentTime, k = Math.max(0, Math.min(1, speed01 || 0));
+    engine.osc.frequency.setTargetAtTime(IDLE_HZ + (TOP_HZ - IDLE_HZ) * k + Math.sin(now * 31) * 1.4, now, 0.05);
+    engine.filter.frequency.setTargetAtTime(380 + 1500 * k, now, 0.08);
+    engine.gain.gain.setTargetAtTime(0.05 + 0.05 * k, now, 0.12);
+  } catch (err) {
+    engine = null;
+  }
 }
-
 export function engineOff() {
-  if (!eng.on || !ac) { eng.on = false; return; }
+  const dead = engine;
+  engine = null;
+  if (!dead || !ctx) return;
+  try {
+    const now = ctx.currentTime;
+    dead.gain.gain.cancelScheduledValues(now);
+    dead.gain.gain.setTargetAtTime(0.0001, now, 0.06);
+    dead.osc.stop(now + 0.4);
+    dead.osc.onended = () => { try { dead.gain.disconnect(); dead.filter.disconnect(); } catch (err) { /* gone */ } };
+  } catch (err) {
+  }
+}
+export function siren(on) {
+  wanted = !!on;
+  const ac = ensure();
+  if (!ac || !master || (wanted && wailer)) return;
   try {
     const now = ac.currentTime;
-    for (const v of [eng.main, eng.sub]) v.gain.gain.setTargetAtTime(0.0001, now, 0.06);
-    for (const p of [eng.main.osc, eng.sub.osc, eng.lfo]) p.stop(now + 0.35);
-  } catch (err) { /* ignore */ }
-  eng.on = false;
-}
-
-/** Two-tone police wail: 659 / 494 Hz square, swapping twice a second. */
-export function siren(on) {
-  const a = audio();
-  if (!a || wail.on === !!on) return;
-  try {
-    if (on) {
-      wail.tone = voice(a, 'square', SIREN_HI, 0.055, 0.12);
-      wail.phase = 0;
-      wail.beat = 0;
-    } else {
-      wail.tone.gain.gain.setTargetAtTime(0.0001, a.currentTime, 0.08);
-      wail.tone.osc.stop(a.currentTime + 0.3);
+    if (!wanted) {
+      const dead = wailer;
+      wailer = null;
+      if (!dead) return;
+      dead.gain.gain.cancelScheduledValues(now);
+      dead.gain.gain.setTargetAtTime(0.0001, now, 0.06);
+      dead.osc.stop(now + 0.5);
+      return;
     }
-  } catch (err) { return; }
-  wail.on = !!on;
+    const osc = ac.createOscillator(), gain = ac.createGain();
+    osc.type = 'square';
+    osc.frequency.value = SIREN_HI;
+    gain.gain.value = 0.0001;
+    gain.gain.linearRampToValueAtTime(0.045, now + 0.3);
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start();
+    wailer = { osc, gain, next: now + SIREN_SWITCH };
+  } catch (err) {
+    wailer = null;
+  }
 }
-
-/** Called from the main loop; flips the tone every 0.45 s while on. */
-export function updateSiren(dt) {
-  if (!wail.on || !wail.tone || !ac) return;
-  wail.phase += dt;
-  if (wail.phase < SIREN_SWAP) return;
-  wail.phase -= SIREN_SWAP;
-  wail.beat = 1 - wail.beat;
-  try { wail.tone.osc.frequency.setTargetAtTime(wail.beat ? SIREN_LO : SIREN_HI, ac.currentTime, 0.01); }
-  catch (err) { /* ignore */ }
+export function initSfx() {
+  ensure();
+  try {
+    const unlock = () => {
+      locked = false;
+      ensure();
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('keydown', unlock);
+  } catch (err) {
+  }
+  return ctx;
+}
+export function updateSfx(dt) {
+  if (!wailer || !ctx) return;
+  try {
+    const now = ctx.currentTime;
+    while (wailer.next <= now) {
+      const hi = wailer.hi = !wailer.hi;
+      wailer.osc.frequency.setValueAtTime(hi ? SIREN_HI : SIREN_LO, wailer.next);
+      wailer.next += SIREN_SWITCH;
+    }
+    if (!wanted) siren(false);
+  } catch (err) {
+    wailer = null;
+  }
 }

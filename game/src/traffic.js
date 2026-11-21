@@ -1,230 +1,260 @@
-// Solara Bay — ambient traffic. Every car here is an NPC driver glued to the
-// street graph: it picks a next intersection at each junction, keeps to the
-// right lane and brakes for whatever stands in front of it.
+// Solara Bay — ambient traffic. Civilian sedans and cabs growl along the road
+// graph, keep to the right-hand lane, queue behind whatever is in front,
+// brake for people, and get quietly recycled once the player leaves them behind.
 
 import { CONFIG } from './config.js';
 import { C } from './palette.js';
 import { makeCar } from './car.js';
 
-const EDGE = CONFIG.world.pitch;
-const LANE = CONFIG.traffic.laneOffset;
+// Civilian paints, bright enough that a street full of them still reads sunny.
+const SEDAN_PAINTS = [C.sedan, 0x6f8fa6, 0x9d6b6b, 0xc9d2e8, 0xe8e4da, 0x5f7f74, 0xb8c4b0];
+const TAXI_FRACTION = 2 / CONFIG.traffic.count; // two of the eleven cars are cabs
+const WATCH_RANGE = 130; // recycle anything further out than this
+const RING_MIN = 40;
+const RING_MAX = 60;
+const CLEAR_HOLD = 1.2; // seconds of open road before a halted car pulls away again
+const SIDE_HALF = 2.4; // half-width of the strip examined in front of the bumper
 const CRUISE = CONFIG.traffic.speed;
-const PROBE = CONFIG.traffic.probeAhead;
-const BRAKE = 12;
-const CLEAR_HOLD = 1.2;
-const RECYCLE_AT = 130;
-const PAINTS = [C.sedan, 0x6f8fa6, 0xb9a37c, 0x9d6b6b, 0x5f7f6a, 0xa8b2bc];
+const BRAKE = 12; // metres per second squared off the throttle
 
-/* ------------------------------------------------------------------ helpers */
-
-/** A point at fraction t of link a→b, pushed right of travel by the lane. */
-function lanePoint(W, a, b, t) {
-  const na = W.roads.nodes[a];
-  const nb = W.roads.nodes[b];
-  const dx = nb.x - na.x;
-  const dz = nb.z - na.z;
+/** Unit direction and length of a graph leg. */
+function legAxis(W, leg) {
+  const a = W.roads.nodes[leg.from];
+  const b = W.roads.nodes[leg.to];
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
   const len = Math.hypot(dx, dz) || 1;
-  const ux = dx / len;
-  const uz = dz / len;
-  // Right of travel in a y-up world is (uz, -ux).
-  return { x: na.x + dx * t + uz * LANE, z: na.z + dz * t - ux * LANE, yaw: Math.atan2(-ux, -uz) };
+  return { dx, dz, len, ux: dx / len, uz: dz / len };
 }
 
-/**
- * Next node from `at`, arriving from `origin`: straight 60%, turn 40%, and
- * never the node we came from unless the junction is a dead end.
- */
-function chooseNext(W, origin, at, rng) {
-  const n = W.roads.nodes[at];
-  const back = lanePoint(W, origin, at, 0);
-  const fx = -Math.sin(back.yaw);
-  const fz = -Math.cos(back.yaw);
-  const options = n.neighbors.filter((nb) => nb !== origin);
-  if (!options.length) return n.neighbors[0] ?? at;
-
-  let straight = options[0];
-  let bestDot = -2;
-  for (const nb of options) {
-    const p = lanePoint(W, at, nb, 0);
-    const dot = -Math.sin(p.yaw) * fx - Math.cos(p.yaw) * fz;
-    if (dot > bestDot) { bestDot = dot; straight = nb; }
-  }
-  if (rng.chance(0.6)) return straight;
-  const turns = options.filter((nb) => nb !== straight);
-  return turns.length ? rng.pick(turns) : straight;
+/** Where a car sits on the right-hand lane at fraction t of its leg. */
+export function lanePoint(W, leg, t) {
+  const a = W.roads.nodes[leg.from];
+  const v = legAxis(W, leg);
+  const off = CONFIG.traffic.laneOffset;
+  const s = t < 0 ? 0 : t > 1 ? 1 : t;
+  return {
+    x: a.x + v.dx * s - v.uz * off,
+    z: a.z + v.dz * s + v.ux * off,
+    heading: Math.atan2(v.ux, v.uz),
+    ux: v.ux,
+    uz: v.uz,
+  };
 }
 
-/* -------------------------------------------------------------------- spawn */
-
-/** Seed `count` cars on the grid; exactly two of them are cabs. */
-export function spawnTraffic(W, rng, count = CONFIG.traffic.count) {
-  const cabs = [rng.int(0, count - 1), rng.int(0, count - 1)];
-  const cars = [];
-  for (let i = 0; i < count; i++) {
-    const kind = cabs.includes(i) ? 'taxi' : 'sedan';
-    const car = makeCar(kind, 0, 0, 0, kind === 'taxi' ? C.taxi : rng.pick(PAINTS));
-    car.traffic = true;
-    car.occupant = 'npc';
-    car.slowT = 0;
-    car.bumpCool = 0;
-    placeOnRandomEdge(W, car, rng, null, null);
-    W.scene.add(car.mesh);
-    cars.push(car);
-  }
-  return cars;
-}
-
-/** Drop a car on a random edge, ideally inside the 40-60 m ring around anchor. */
-function placeOnRandomEdge(W, car, rng, ax, az) {
-  const nodes = W.roads.nodes;
-  let pick = null;
-  for (let tries = 0; tries < 24; tries++) {
-    const from = rng.int(0, nodes.length - 1);
-    const hub = nodes[from];
-    if (!hub.neighbors.length) continue;
-    const to = rng.pick(hub.neighbors);
-    const t = rng.range(0.2, 0.8);
-    const p = lanePoint(W, from, to, t);
-    pick = { from, to, t, p };
-    if (ax === null) break;
-    const d = Math.hypot(p.x - ax, p.z - az);
-    if (d >= 40 && d <= 60) break;
-  }
-  if (!pick) return car;
-  car.leg = { from: pick.from, to: pick.to, t: pick.t };
-  car.x = pick.p.x;
-  car.z = pick.p.z;
-  car.heading = pick.p.yaw;
-  car.speed = CRUISE * 0.6;
-  car.mesh.position.set(car.x, car.mesh.position.y, car.z);
-  car.mesh.rotation.y = car.heading;
+/** A car body, standing on its lane and registered with the scene. */
+function buildCivilian(W, rng, x, z, heading, taxi) {
+  const paint = taxi ? C.taxi : rng.pick(SEDAN_PAINTS);
+  const car = makeCar(taxi ? 'taxi' : 'sedan', x, z, heading, paint);
+  car.occupant = 'npc';
+  car.traffic = true;
+  car.leg = null;
+  car.holdT = 0;
+  car.rollT = CLEAR_HOLD;
+  W.scene.add(car.mesh);
   return car;
 }
 
-/** Lift every car far from `pos` back into the ring around it. */
-export function respawnTraffic(list, W, rng, pos) {
-  for (const car of list) {
-    placeOnRandomEdge(W, car, rng, pos.x, pos.z);
-    car.hp = CONFIG.car.hp;
-    car.wrecked = false;
-    car.slowT = 0;
-    car.mesh.visible = true;
+/** Put a body onto a leg, snapped to its lane, already facing the right way. */
+function snapToLeg(W, car, from, to, t) {
+  car.leg = { from, to, t };
+  const p = lanePoint(W, car.leg, t);
+  car.x = p.x;
+  car.z = p.z;
+  car.heading = p.heading;
+  car.speed = 0;
+  car.holdT = 0;
+  car.mesh.position.set(p.x, 0, p.z);
+  car.mesh.rotation.y = p.heading;
+}
+
+/** 11 cars spread over the grid near the middle of the bay, two of them cabs. */
+export function spawnTraffic(W, rng, count) {
+  const total = count || CONFIG.traffic.count;
+  const cabs = Math.max(1, Math.round(total * TAXI_FRACTION));
+  const hubs = [];
+  for (let i = 0; i < W.roads.nodes.length; i++) {
+    const n = W.roads.nodes[i];
+    if (n.neighbors.length && Math.hypot(n.x, n.z) <= 165) hubs.push(i);
+  }
+
+  const list = [];
+  for (let i = 0; i < total && hubs.length; i++) {
+    let placed = false;
+    for (let tryCount = 0; tryCount < 20 && !placed; tryCount++) {
+      const here = rng.pick(hubs);
+      const node = W.roads.nodes[here];
+      const to = rng.pick(node.neighbors);
+      const spot = lanePoint(W, { from: here, to }, rng.range(0.05, 0.9));
+      const crowded = list.some((c) => Math.hypot(c.x - spot.x, c.z - spot.z) < 9);
+      if (crowded) continue;
+
+      const car = buildCivilian(W, rng, spot.x, spot.z, spot.heading, i < cabs);
+      snapToLeg(W, car, here, to, rng.range(0.05, 0.9));
+      list.push(car);
+      placed = true;
+    }
   }
   return list;
 }
 
-/* ------------------------------------------------------------------- update */
+/** Forward probe: the nearest body sitting in this car's lane, or null. */
+function bodyAhead(W, self, G) {
+  const p = lanePoint(W, self.leg, self.leg.t);
+  const reach = CONFIG.traffic.probeAhead + CONFIG.car.radius;
+  let best = null;
 
-/** Advance every ambient car: cruise, turn at junctions, brake for obstacles. */
-export function updateTraffic(list, W, G, dt) {
-  const rng = (G && G.rng) || null;
-  const focus = playerPoint(G);
+  const look = (bx, bz) => {
+    const rx = bx - p.x;
+    const rz = bz - p.z;
+    const ahead = rx * p.ux + rz * p.uz;
+    if (ahead < -0.5 || ahead > reach) return;
+    if (Math.abs(rx * p.uz - rz * p.ux) > SIDE_HALF) return;
+    const gap = ahead - CONFIG.car.radius;
+    if (!best || gap < best) best = gap;
+  };
+
+  for (const other of (G && G.traffic) || []) {
+    if (other && other !== self && !other.wrecked) look(other.x, other.z);
+  }
+  if (G && !G.inCar && G.P && G.P.pos && !G.P.dead) look(G.P.pos.x, G.P.pos.z);
+  for (const ped of (G && G.peds) || []) {
+    if (ped && ped.pos && ped.state !== 'down' && ped.state !== 'ride') look(ped.pos.x, ped.pos.z);
+  }
+  return best;
+}
+
+/** Junction choice: straight on 60% of the time, otherwise any exit bar the one behind. */
+function pickExit(W, leg, rng) {
+  const node = W.roads.nodes[leg.to];
+  if (!node || !node.neighbors.length) return null;
+  const v = legAxis(W, leg);
+  const straight = [];
+  const others = [];
+  for (const n of node.neighbors) {
+    if (n === leg.from) continue;
+    const target = W.roads.nodes[n];
+    const dot = (target.x - node.x) * v.ux + (target.z - node.z) * v.uz;
+    if (dot > 0.5) straight.push(n);
+    else others.push(n);
+  }
+  if (straight.length && (rng.chance(0.6) || !others.length)) return rng.pick(straight);
+  if (others.length) return rng.pick(others);
+  return leg.from; // dead end: the only honest way out is back
+}
+
+/** Drop a car onto an edge 40-60 m from the player. Returns false if no corner fits. */
+function recycleFar(W, rng, car, pos) {
+  const ring = [];
+  for (let i = 0; i < W.roads.nodes.length; i++) {
+    const n = W.roads.nodes[i];
+    if (!n.neighbors.length) continue;
+    const d = Math.hypot(n.x - pos.x, n.z - pos.z);
+    if (d >= RING_MIN && d <= RING_MAX) ring.push(i);
+  }
+  if (!ring.length) return false;
+  const from = rng.pick(ring);
+  snapToLeg(W, car, from, rng.pick(W.roads.nodes[from].neighbors), rng.range(0.15, 0.6));
+  return true;
+}
+
+/** Public: pull every straggler back in around the player's position. */
+export function respawnTraffic(list, W, rng, pos) {
+  if (!list || !W || !pos) return;
+  const source = rng || fallbackRng;
   for (const car of list) {
     if (!car || car.wrecked) continue;
-    car.leg = car.leg || { from: 0, to: 0, t: 0 };
-    car.bumpCool = Math.max(0, car.bumpCool - dt);
+    if (Math.hypot(car.x - pos.x, car.z - pos.z) > WATCH_RANGE) recycleFar(W, source, car, pos);
+  }
+}
 
-    if (focus && Math.hypot(car.x - focus.x, car.z - focus.z) > RECYCLE_AT) {
-      placeOnRandomEdge(W, car, rng || localRng(car), focus.x, focus.z);
-      continue;
+/** Bumper contact: the cab takes a light knock, the horn complains. */
+function graze(car, G, closing) {
+  car.hp = Math.max(0, car.hp - Math.min(12, closing * 1.5));
+  car.speed *= 0.2;
+  car.holdT = 0;
+  if (G && G.sound && G.sound.honk) G.sound.honk();
+}
+
+/** One tick of the whole loop. Cars that belong to a screenshot keep their place. */
+export function updateTraffic(list, W, G, dt) {
+  if (!list || !W || !W.roads) return;
+  const rng = (G && G.rng) || fallbackRng;
+  const playerCar = G && G.inCar;
+  const focus = (G && G.P && G.P.pos) || (playerCar ? playerCar : null);
+
+  for (const car of list) {
+    if (!car || car.wrecked) continue;
+    if (!car.leg || car.leg.from === undefined) continue; // posed by a screenshot
+
+    const gap = bodyAhead(W, car, G);
+    const blocked = gap !== null && gap < CONFIG.traffic.probeAhead;
+    if (blocked) {
+      car.holdT += dt;
+      car.rollT = 0;
+    } else {
+      // Road is open again: a stopped car needs 1.2 s of clear lane before it rolls.
+      car.rollT = Math.min(CLEAR_HOLD, car.rollT + dt);
+      if (car.rollT >= CLEAR_HOLD) car.holdT = 0;
     }
 
-    if (blockedAhead(car, G, focus)) {
-      car.slowT = CLEAR_HOLD;
-      car.speed = Math.max(0, car.speed - BRAKE * dt);
-    } else if (car.slowT > 0) {
-      car.slowT -= dt;
-      car.speed = Math.max(0, car.speed - BRAKE * dt);
-    } else if (car.speed < CRUISE) {
-      car.speed = Math.min(CRUISE, car.speed + 4 * dt);
+    // A bump from the player's car does real, if small, damage.
+    if (playerCar && playerCar !== car) {
+      const near = Math.hypot(car.x - playerCar.x, car.z - playerCar.z) < CONFIG.car.radius * 2 + 0.4;
+      const closing = Math.abs(playerCar.speed) - Math.abs(car.speed);
+      if (near && closing > 3.5) graze(car, G, closing); // civilian cars grind on
     }
 
-    driveAlongEdge(car, W, dt, rng);
-    bumpPlayerCar(car, G);
+    // Speed control: creep up to the gap, or roll on at cruise once the road clears.
+    let target = CRUISE;
+    if (blocked) target = Math.max(0, Math.min(CRUISE, (gap - 0.8) * 2));
+    if (car.rollT < CLEAR_HOLD) target = 0;
 
-    const wheels = car.mesh.userData.wheels || [];
-    car.wheelSpin = (car.wheelSpin || 0) + car.speed * dt * 2.4;
-    for (const w of wheels) w.mesh.rotation.x = car.wheelSpin;
+    const was = car.speed;
+    if (car.speed < target) car.speed = Math.min(target, car.speed + 3.2 * dt);
+    else car.speed = Math.max(target, car.speed - BRAKE * dt);
+    if (car.speed < 0.04) car.speed = 0;
+
+    // Roll along the edge on this tick's average speed; a junction hands the car
+    // to its next leg, straight on most of the time.
+    const dist = (was + car.speed) * 0.5 * dt;
+    const span = legAxis(W, car.leg).len || CONFIG.world.pitch;
+    car.leg.t += dist / span;
+    if (car.leg.t >= 1) {
+      const next = pickExit(W, car.leg, rng);
+      const overflow = Math.min(car.leg.t - 1, 0.5);
+      if (next === null || next === car.leg.from) {
+        car.speed *= 0.3; // a dead end: ease off and wait for the leg to reopen
+        car.leg.t = 1;
+      } else {
+        car.leg = { from: car.leg.to, to: next, t: overflow };
+      }
+    }
+
+    const spot = lanePoint(W, car.leg, car.leg.t);
+    car.x = spot.x;
+    car.z = spot.z;
+    car.heading = spot.heading;
+    car.steer = 0;
+    car.mesh.position.set(spot.x, 0, spot.z);
+    car.mesh.rotation.y = spot.heading;
+
+    // Turn the tyres so a stopped queue still looks alive.
+    const wheels = (car.extras && car.extras.wheels) || [];
+    for (let w = 0; w < wheels.length; w++) wheels[w].rotation.x -= car.speed * dt / 0.42;
+
+    if (focus && Math.hypot(car.x - focus.x, car.z - focus.z) > WATCH_RANGE) {
+      recycleFar(W, rng, car, focus);
+    }
   }
 }
 
-/** The player's ground position, on foot or driving. */
-function playerPoint(G) {
-  if (!G) return null;
-  if (G.inCar) return { x: G.inCar.x, z: G.inCar.z };
-  return G.P && G.P.pos ? { x: G.P.pos.x, z: G.P.pos.z } : null;
-}
-
-/** Cover the leg, hop to the next one on arrival, ease the heading round. */
-function driveAlongEdge(car, W, dt, rng) {
-  const leg = car.leg;
-  leg.t += (car.speed / EDGE) * dt;
-  while (leg.t >= 1) {
-    leg.t -= 1;
-    const prev = leg.from;
-    leg.from = leg.to;
-    leg.to = chooseNext(W, prev, leg.from, rng || localRng(car));
-  }
-  const p = lanePoint(W, leg.from, leg.to, leg.t);
-  car.x = p.x;
-  car.z = p.z;
-  let diff = p.yaw - car.heading;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  car.heading += diff * Math.min(1, 9 * dt);
-  car.mesh.position.set(car.x, car.mesh.position.y, car.z);
-  car.mesh.rotation.y = car.heading;
-}
-
-/** Does anything fill the 6 m box ahead of this bumper? */
-function blockedAhead(car, G, focus) {
-  const px = car.x - Math.sin(car.heading) * (PROBE + 2.2);
-  const pz = car.z - Math.cos(car.heading) * (PROBE + 2.2);
-  const near = (x, z, r) => Math.abs(x - px) < r && Math.abs(z - pz) < r;
-
-  for (const o of (G && G.traffic) || []) {
-    if (o !== car && o && !o.wrecked && near(o.x, o.z, 3.1) && inFront(car, o.x, o.z)) return true;
-  }
-  if (G && G.inCar && near(G.inCar.x, G.inCar.z, 3.4)) return true;
-  for (const o of (G && G.cars) || []) {
-    if (o && !o.wrecked && o !== G.inCar && near(o.x, o.z, 3.4)) return true;
-  }
-  if (focus && !G.inCar && Math.hypot(focus.x - px, focus.z - pz) < PROBE
-    && inFront(car, focus.x, focus.z)) return true;
-  for (const ped of (G && G.peds) || []) {
-    if (ped && ped.state !== 'down' && ped.pos
-      && Math.hypot(ped.pos.x - px, ped.pos.z - pz) < PROBE && inFront(car, ped.pos.x, ped.pos.z)) return true;
-  }
-  return false;
-}
-
-/** Forward half-plane test, so a car beside us is never "ahead". */
-function inFront(car, x, z) {
-  return (x - car.x) * -Math.sin(car.heading) + (z - car.z) * -Math.cos(car.heading) > 0.4;
-}
-
-/** Contact with the player's car: a little damage on both, then the horn. */
-function bumpPlayerCar(car, G) {
-  const target = G && G.inCar;
-  if (!target || car.bumpCool > 0) return;
-  if (Math.hypot(target.x - car.x, target.z - car.z) > target.radius + car.radius + 0.4) return;
-  if (Math.abs(target.speed) + car.speed < 2) return;
-  car.bumpCool = 1.5;
-  target.hp -= 4;
-  car.hp -= 3;
-  car.speed *= 0.5;
-  if (G.sound && G.sound.honk) G.sound.honk();
-}
-
-/** Small positional generator for calls made without a shared rng. */
-function localRng(car) {
-  let s = (((car.x * 73856093) ^ (car.z * 19349663)) >>> 0) || 1;
-  const next = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
-  return {
-    next,
-    range: (a, b) => a + (b - a) * next(),
-    int: (a, b) => a + Math.floor(next() * (b - a + 1)),
-    pick: (arr) => arr[Math.floor(next() * arr.length)],
-    chance: (p) => next() < p,
-  };
-}
+// Used only if a caller forgets to hand over the seeded generator.
+const fallbackRng = {
+  next: () => Math.random(),
+  range: (a, b) => a + (b - a) * Math.random(),
+  int: (a, b) => Math.floor(a + (b - a + 1) * Math.random()),
+  pick: (arr) => arr[Math.floor(Math.random() * arr.length)],
+  chance: (p) => Math.random() < p,
+  angle: () => Math.random() * Math.PI * 2,
+};

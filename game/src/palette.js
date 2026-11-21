@@ -1,5 +1,5 @@
-// Solara Bay — the single colour vocabulary for the whole city, plus a small
-// cached material factory so thousands of boxes share a handful of materials.
+// Solara Bay — the colour palette and the shared material cache.
+// Every colour is named for the thing it paints.
 
 import * as THREE from 'three';
 
@@ -35,22 +35,18 @@ export const C = {
 
 const cache = new Map();
 
-/**
- * Shared material per (hex, variant). flat → unlit, glassy → shinier.
- */
 export function material(hex, { flat = false, glassy = false } = {}) {
-  const key = `${hex}:${flat ? 'f' : glassy ? 'g' : 'l'}`;
-  let mat = cache.get(key);
-  if (mat) return mat;
+  const key = `${hex}|${flat ? 1 : 0}|${glassy ? 1 : 0}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
 
-  if (flat) {
+  let mat;
+  if (flat && glassy) {
+    mat = new THREE.MeshBasicMaterial({ color: hex });
+  } else if (flat) {
     mat = new THREE.MeshBasicMaterial({ color: hex });
   } else if (glassy) {
-    mat = new THREE.MeshPhongMaterial({
-      color: hex,
-      shininess: 80,
-      specular: 0xffffff,
-    });
+    mat = new THREE.MeshPhongMaterial({ color: hex, shininess: 80, specular: 0xffffff });
   } else {
     mat = new THREE.MeshLambertMaterial({ color: hex });
   }

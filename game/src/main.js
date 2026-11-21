@@ -1,261 +1,202 @@
-// Solara Bay — boot, screens and the one fixed-step game loop.
-
-import { CONFIG, STEP } from './config.js';
-import { makeRng } from './random.js';
-import { createInput } from './input.js';
-import { initWorld, updateCamera, renderFrame } from './world.js';
-import { buildCity } from './city.js';
-import { createPlayer, updatePlayerFoot, fireWeapon, damagePlayer, respawnPlayer, givePickup, syncRig } from './player.js';
-import { makeCar, updateCarDrive, seatPoints } from './car.js';
-import { spawnTraffic, updateTraffic } from './traffic.js';
-import { spawnPeds, updatePeds, makeFarePed, knockDown } from './peds.js';
-import { initPolice, addStars, updatePolice, clearWanted, officerHit } from './police.js';
-import { initMissions, updateMissions, startMission } from './missions.js';
-import { initEconomy, buyItem, setFares, updateFares, saveGame, loadGame, clearSave, SHOP } from './economy.js';
-import { createHUD, updateHUD, drawMinimap, toast, showPanel, hidePanels, setBanner } from './hud.js';
-import { initSfx, S, engineOn, engineUpdate, engineOff, siren } from './sfx.js';
-import { initEffects, updateEffects, spawnExplosion, spawnTracer } from './render.js';
-import { applyShot } from './shots.js';
-
-const $ = (id) => document.getElementById(id);
-const K = CONFIG;
-const GRAB = 3.2;
-
+import * as cfg from './config.js';
+import * as rnd from './random.js';
+import * as inp from './input.js';
+import * as wld from './world.js';
+import * as cty from './city.js';
+import * as ply from './player.js';
+import * as veh from './car.js';
+import * as trf from './traffic.js';
+import * as pds from './peds.js';
+import * as pol from './police.js';
+import * as msn from './missions.js';
+import * as eco from './economy.js';
+import * as hud from './hud.js';
+import * as sfx from './sfx.js';
+import * as fx from './render.js';
+import * as sht from './shots.js';
+const el = (id) => document.getElementById(id);
+const CFG = cfg.CONFIG, COST = CFG.economy, WANT = CFG.wanted.stars, PC = CFG.player, STEP = cfg.STEP, S = sfx.S;
+const tell = hud.toast, showP = hud.showPanel, hideP = hud.hidePanels, showHud = hud.showHUD, save = eco.saveGame;
+const far = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+const hold = (I, a, b) => (I.down(a) ? 1 : 0) - (I.down(b) ? 1 : 0);
+const fail = (e) => {
+ const m = String((e && e.message) || e).slice(0,100);
+ document.title = 'SB-error-' + m;
+ const b = el('boot-error') || document.body.appendChild(document.createElement('pre'));
+ b.id = 'boot-error'; b.textContent = m;
+};
 function boot() {
-  const q = new URLSearchParams(location.search);
-  const shot = q.get('shot');
-  const seed = Number(q.get('seed')) || K.seed;
-  const canvas = $('app').appendChild(document.createElement('canvas'));
-  const W = initWorld(canvas);
-  const city = buildCity(W, makeRng(seed));
-  const P = createPlayer(W, city);
-  const rng = makeRng(seed + 7);
-  const cars = city.spawns.carParks.map((p) => {
-    const c = makeCar(p.kind, p.x, p.z, p.heading, p.color);
-    W.scene.add(c.mesh);
-    c.tag = p.tag;
-    return c;
-  });
-  const traffic = spawnTraffic(W, rng, K.traffic.count);
-  const peds = spawnPeds(W, city, rng, K.peds.count);
-  const PO = initPolice(W, city, rng);
-  const saved = loadGame();
-  const M = initMissions();
-  const E = initEconomy(saved);
-  const H = createHUD();
-  const I = createInput(canvas);
-  initSfx();
-
-  const G = {
-    W, city, P, cars, traffic, peds, PO, M, E, H, I, rng, effects: initEffects(W), sound: { ...S, siren },
-    screen: 'title', inCar: null, alarm: 0, alarmX: 0, alarmZ: 0, time: 0, saveT: 0,
-    shot: null, objective: null, m1Car: cars.find((c) => c.tag === 'm1car') || cars[0],
-    engine: { on: engineOn, update: engineUpdate, off: engineOff },
-    toast: (t) => toast(H, t),
-    damagePlayer: (amt) => damagePlayer(P, amt, G),
-    damagePed: (ped, dmg) => { if ((ped.hp -= dmg) <= 0) knockDown(ped, G, 'shot'); },
-    damageCop: (cop, dmg) => officerHit(PO, cop, dmg, G),
-    damageTrafficCar: (car, dmg) => (car.hp -= dmg),
-    onPedHit: (ped, cause) => addStars(PO, cause === 'shot' ? K.wanted.killPed : K.wanted.hitPed, G),
-    onCopDown: () => addStars(PO, K.wanted.killCop, G),
-    explodeCar: (car) => { spawnExplosion({ x: car.x, y: 1, z: car.z }); S.explode(); },
-    spawnFare: (x, z) => { const p = makeFarePed(W, city, rng, x, z); peds.push(p); return p; },
-    saveGame: () => saveGame(G),
-    missionStart: (def) => setBanner(H, def.title, 2200),
-    missionComplete: (reward, story) => {
-      E.money += reward;
-      H.completeStory.textContent = story;
-      H.completeReward.textContent = '+$' + reward;
-      G.screen = 'complete';
-      showPanel(H, 'complete');
-      S.jingle(true);
-      saveGame(G);
-    },
-    missionFail: (title, hint) => { toast(H, hint); startMission(M, G, { force: true }); },
-    bust: () => payPanel(G, 'busted'),
-    wasted: () => payPanel(G, 'wasted'),
-  };
-
-  if (shot) applyShot(shot, G);
-  if (saved && !shot) {
-    $('btn-continue').style.display = '';
-    M.index = Math.min(saved.missionIndex || 0, 3);
-    Object.assign(P, { rifle: !!saved.rifle, ammo: saved.ammo || 0, armor: saved.armor || 0 });
-    if (P.rifle) P.weapon = 'rifle';
-  }
-  wire(G);
-  run(G);
-}
-
-// Busted and wasted: one bill, one panel, one respawn place.
-function payPanel(G, kind) {
-  if (G.screen !== 'play') return;
-  leave(G);
-  const fee = kind === 'busted' ? K.economy.bustedFee : K.economy.hospitalFee;
-  G.E.money = Math.max(0, G.E.money - fee);
-  clearWanted(G.PO, G);
-  G.screen = kind;
-  const el = $(kind + '-fee');
-  if (el) el.textContent = 'Fee: $' + fee;
-  showPanel(G.H, kind);
-  S.jingle(false);
-}
-
-function wire(G) {
-  const { H, P, E, I } = G;
-  const play = (fresh) => {
-    if (fresh) clearSave();
-    G.screen = 'play';
-    hidePanels(H);
-    I.lock();
-    setBanner(H, 'Vesper runs the Glass Orchid. Meet her there.', 2600);
-  };
-  $('btn-new').onclick = () => play(true);
-  for (const id of ['btn-continue', 'btn-resume', 'btn-next', 'btn-shop-close']) $(id).onclick = () => play(false);
-  for (const [id, where] of [['btn-busted', 'station'], ['btn-wasted', 'hospital']]) {
-    $(id).onclick = () => {
-      G.P.dead = false;
-      respawnPlayer(G.P, G, where);
-      G.P.hp = K.player.hp * 0.8;
-      play(false);
-    };
-  }
-  for (const row of SHOP) {
-    const b = H.buyButtons[row.item];
-    if (b) b.onclick = () => { buyItem(E, P, row.item, G); H.shopMoney.textContent = 'Cash: $' + E.money; };
-  }
-}
-
-function nearestCar(G) {
-  let best = null, d0 = GRAB;
-  const p = G.P.pos;
-  for (const c of G.cars.concat(G.traffic)) {
-    if (c.wrecked) continue;
-    const d = Math.hypot(c.x - p.x, c.z - p.z);
-    if (d < d0) { d0 = d; best = c; }
-  }
-  return best;
-}
-
-function seat(G, car) {
-  const stolen = car.traffic;
-  Object.assign(car, { player: true, occupant: 'player' });
-  G.inCar = car;
-  G.P.group.visible = false;
-  G.W.cam.dist = 8.5;
-  engineOn(car.kind);
-  const i = G.traffic.indexOf(car);
-  if (i >= 0) G.traffic.splice(i, 1);
-  if (!G.cars.includes(car)) G.cars.push(car);
-  if (stolen) addStars(G.PO, K.wanted.theftOccupied, G);
-  if (car.kind === 'police') addStars(G.PO, K.wanted.policeCar, G);
-}
-
-function leave(G) {
-  const car = G.inCar;
-  if (!car) return;
-  const { exit } = seatPoints(car);
+ const q = new URLSearchParams(location.search);
+ const seed = rnd.hashString(q.get('seed') || '1337');
+ const W = wld.initWorld(document.createElement('canvas'));
+ el('app').appendChild(W.canvas);
+ const town = cty.buildCity(W, rnd.makeRng(seed));
+ const I = inp.createInput(W.canvas);
+ const P = ply.createPlayer(W, town);
+ const rng = rnd.makeRng(seed + 7);
+ const sound = { ...S, ...sfx.initSfx(), engineOff: sfx.engineOff, engine: (on) => (on ? sfx.engineOn('sport') : sfx.engineOff()) };
+ const cars = town.spawns.carParks.map((p) => {
+  const c = veh.makeCar(p.kind, p.x, p.z, p.heading || 0, p.color);
+  c.tag = p.tag;
+  W.scene.add(c.mesh);
+  return c;
+ });
+ const traffic = trf.spawnTraffic(W, rng, 11);
+ traffic.forEach((c) => W.scene.add(c.mesh));
+ const peds = pds.spawnPeds(W, town, rng, 15);
+ const PO = pol.initPolice(W, town, rnd.makeRng(seed + 11));
+ const M = msn.initMissions();
+ const saved = eco.loadGame(), E = eco.initEconomy(saved);
+ const H = hud.createHUD();
+ const crate = town.pickup;
+ let loot = false;
+ const cash = () => { H.shopStatus.textContent = `Cash: $${(E.money|0)}`; };
+ const stars = (n) => pol.addStars(PO, n, G);
+ function wreck(car) {
+  if (!car || car.blown) return;
+  const lit = (b) => far(b.pos || b, car) < 4 && !b.down && b.state !== 'down';
+  car.blown = true;
+  fx.spawnExplosion({ x: car.x, y: 0.9, z: car.z });
+  S.explode();
+  PO.foot.forEach((c) => { if (lit(c)) pol.officerHit(PO, c, 99, G); });
+  peds.forEach((b) => { if (lit(b)) b.hp = 0; });
+  if (G.inCar === car) { G.inCar = null; I.unlock(); G.wasted(); }
+ }
+ function recover() {
+  const out = G.screen === 'busted';
+  eco.addMoney(E, -Math.min(E.money, out ? COST.bustedFee : COST.hospitalFee), null);
+  pol.clearWanted(PO, G);
+  ply.respawnPlayer(P, G, town.places[out ? 'station' : 'hospital']);
+  P.dead = false; P.hp = PC.hp; P.group.visible = true;
+  hideP(H); save(G); G.screen = 'play';
+ }
+ function leave() {
+  const s = veh.seatPoints(G.inCar);
+  Object.assign(G.inCar, { player: false, occupant: null, speed: 0 });
   G.inCar = null;
-  Object.assign(car, { player: false, occupant: null, speed: 0 });
-  G.P.pos.x = exit.x;
-  G.P.pos.z = exit.z;
-  G.P.group.visible = true;
-  G.P.group.position.set(exit.x, 0, exit.z);
-  G.W.cam.dist = K.player.camDistFoot;
-  engineOff();
-}
-
-function keys(G) {
-  const { I, P, E, H } = G;
-  if (I.wasPressed('KeyE')) {
-    if (G.inCar) leave(G);
-    else { const c = nearestCar(G); if (c) seat(G, c); else toast(H, 'Nothing in reach.'); }
+  P.pos.x = s.x; P.pos.z = s.z;
+  P.group.position.set(s.x, 0, s.z); P.group.visible = true;
+  sfx.engineOff();
+ }
+ function take(car) {
+  if (!car || car.wrecked) return;
+  const cop = car.kind === 'police';
+  if (cop) stars(WANT.policeCar);
+  if (car.occupant) {
+  if (!cop) stars(WANT.theftOccupied);
+  const out = peds.find((p) => p.state === 'walk'), side = car.heading + Math.PI / 2;
+  if (out) {
+    Object.assign(out, { state: 'flee', fleeT: 6, leg: null });
+    Object.assign(out.pos, { x: car.x + Math.sin(side) * 2, z: car.z + Math.cos(side) * 2 });
+    out.mesh.visible = true;
+    tell(H, 'Stolen car. Noticed.');
   }
-  if (I.wasPressed('KeyF') && !G.inCar) fireWeapon(P, G);
-  if (I.wasPressed('KeyQ') && P.rifle) P.weapon = P.weapon === 'rifle' ? 'pistol' : 'rifle';
-  if (I.wasPressed('KeyT') && G.inCar) setFares(E, !E.fares, G);
-  const vm = G.city.markers.vineMart;
-  if (I.wasPressed('KeyB') && !G.inCar && Math.hypot(P.pos.x - vm.x, P.pos.z - vm.z) < 3) {
-    G.screen = 'shop';
-    H.shopMoney.textContent = 'Cash: $' + E.money;
-    showPanel(H, 'shop');
-    I.unlock();
   }
-  if (I.wasPressed('Escape')) {
-    if (G.screen === 'play') { G.screen = 'pause'; showPanel(H, 'pause'); I.unlock(); }
-    else if (G.screen === 'pause') { G.screen = 'play'; hidePanels(H); I.lock(); }
-  }
-}
-
-function tick(G, dt) {
-  const { P, PO, M, E, I, W } = G;
-  if (G.shot) {
-    G.time += dt;
-    updateTraffic(G.traffic, W, G, dt);
-    updatePeds(G.peds, W, G, dt);
-    updateEffects(W, dt);
-    if (G.tracer) spawnTracer(G.tracer[0], G.tracer[1]);
-    if (G.shot.tick) G.shot.tick(G, dt);
-    return;
-  }
+  Object.assign(car, { occupant: 'player', player: true });
+  G.inCar = car;
+  sfx.engineOn(car.kind);
+  I.lock();
+ }
+ const nearest = () => cars.concat(traffic).filter((c) => !c.wrecked && far(c, P.pos) < 3.2)
+  .sort((a, b) => far(a, P.pos) - far(b, P.pos))[0];
+ const end = (how) => {
   if (G.screen !== 'play') return;
+  if (G.inCar) leave();
+  G.screen = how; showP(H, how); S.jingle(how === 'complete');
+ };
+ function missionComplete(pay, story) {
+  eco.addMoney(E, pay, H);
+  H.completeTitle.textContent = 'Job done'; H.completeStory.textContent = story;
+  H.completeReward.textContent = `+$${pay}`;
+  save(G); end('complete');
+ }
+ const G = Object.assign({ W, city: town, P, cars, traffic, peds, PO, M, E, H, I, effects: fx, sound, rng, cash, stars },
+  { screen: 'title', inCar: null, alarm: 0, alarmX: 0, alarmZ: 0, time: 0, saveT: 0, objective: null,
+  shot: q.get('shot') || null, explodeCar: wreck, onCarExplode: wreck, addStars: stars, damagePed: () => {},
+  damageTrafficCar: (c, d) => { c.hp -= d; if (c.hp <= 0) wreck(c); }, missionComplete, toast: (t) => tell(H, t),
+  saveGame: () => save(G), clearWanted: () => pol.clearWanted(PO, G), damagePlayer: (a) => ply.damagePlayer(P, a, G),
+  damageCop: (c, d) => pol.officerHit(PO, c, d, G), bust: () => end('busted'), wasted: () => end('wasted'),
+  missionStart: (d) => { hud.setBanner(H, d.title, 2600); tell(H, d.brief); }, missionFail: (t, h) => tell(H, `${t}: ${h}`),
+  onPedHit: (p, how) => stars(how === 'car' ? WANT.hitPed : WANT.killPed), onPedKill: () => stars(WANT.killPed),
+  onCopDown: () => stars(WANT.killCop) });
+ const resume = (fn) => () => { hideP(H); showHud(H, true); G.screen = 'play'; I.lock(); fn?.(); };
+ const on = {};
+ on.continue = resume(() => {
+  const s = saved || {}; E.money = s.money || 0;
+  Object.assign(P, { rifle: !!s.rifle, ammo: s.ammo || 0, armor: s.armor || 0, weapon: s.rifle ? 'rifle' : 'pistol' });
+  msn.restoreMissions(M, s);
+ });
+ on.new = resume(() => { eco.clearSave(); tell(H, 'Vesper waits at the Glass Orchid'); });
+ on.title = () => { save(G); showHud(H, false); I.unlock(); G.screen = 'title'; showP(H, 'title'); };
+ on.shop = () => (far(town.places.vineMart, P.pos) > 3 ? tell(H, 'Vine Mart is the shop')
+  : (cash(), G.screen = 'shop', showP(H, 'shop')));
+ on.resume = on['shop-close'] = on['complete-next'] = resume();
+ on.busted = on.wasted = resume(recover);
+ for (const id in on) el('btn-' + id).addEventListener('click', on[id]);
+ if (saved) el('btn-continue').classList.remove('hidden');
+ eco.SHOP.forEach((r) => document.querySelector(`[data-buy="${r.item}"]`)
+  .addEventListener('click', () => { eco.buyItem(E, P, r.item, G); cash(); }));
+ W.canvas.addEventListener('mousedown', (ev) => {
+  if (G.screen !== 'play' || ev.button) return;
+  if (!I.locked) return I.lock();
+  if (!G.inCar) ply.fireWeapon(P, G);
+ });
+ function step(dt) {
+  const live = G.screen === 'play', hit = I.wasPressed, car = G.inCar;
   G.time += dt;
-  G.alarm = Math.max(0, G.alarm - dt);
-  if (G.inCar) {
-    const car = G.inCar;
-    const th = (I.down('KeyW') ? 1 : 0) - (I.down('KeyS') ? 0.7 : 0);
-    const st = (I.down('KeyA') ? -1 : 0) + (I.down('KeyD') ? 1 : 0);
-    updateCarDrive(car, th, st, I.down('Space') ? 1 : 0, dt, W, G);
-    P.pos.x = car.x;
-    P.pos.z = car.z;
-    P.yaw = car.heading;
-    if (car.wrecked) leave(G);
-    else engineUpdate(Math.abs(car.speed) / (car.maxSpeed || 28), dt);
-  } else {
-    updatePlayerFoot(P, G, I, dt);
-    syncRig(P, dt);
+  if (hit('Escape')) {
+  G.screen = live ? 'pause' : 'play';
+  live ? (showP(H, 'pause'), I.unlock()) : (hideP(H), I.lock());
   }
-  updateTraffic(G.traffic, W, G, dt);
-  updatePeds(G.peds, W, G, dt);
-  updatePolice(PO, G, I, dt);
-  updateMissions(M, G, dt);
-  updateFares(E, G, dt);
-  updateEffects(W, dt);
-  const pick = G.city.pickup;
-  if (pick && !G.crate && Math.hypot(P.pos.x - pick.x, P.pos.z - pick.z) < 2) {
-    G.crate = true;
-    givePickup(P, G, 'rifle');
-    setBanner(G.H, 'Rifle: press Q to switch', 2400);
+  if (!live) { fx.updateEffects(W, dt); wld.renderFrame(W); return; }
+  if (hit('KeyE')) (car ? leave() : take(nearest()));
+  if (hit('KeyF') && !car) ply.fireWeapon(P, G);
+  if (hit('KeyQ') && P.rifle) P.weapon = P.weapon === 'rifle' ? 'pistol' : 'rifle';
+  if (hit('KeyB') && !car) on.shop();
+  if (hit('KeyT') && car && car.kind === 'taxi') eco.setFares(E, !E.fares, G);
+  if (crate && !loot && far(crate, P.pos) < 2) {
+  loot = true; ply.givePickup(P, G, 'rifle'); S.chime();
+  tell(H, 'Rifle from the crate. Q swaps.');
   }
-  updateCamera(W, I, { x: P.pos.x, y: 0, z: P.pos.z }, dt);
-  G.saveT += dt;
-  if (G.saveT >= K.saveEvery) { G.saveT = 0; saveGame(G); }
-}
-
-function run(G) {
-  let last = performance.now(), acc = 0, n = 0;
-  const frame = (now) => {
-    try {
-      const dt = Math.min(0.1, (now - last) / 1000);
-      last = now;
-      acc += dt;
-      let steps = 0;
-      while (acc >= STEP && steps++ < 5) { keys(G); tick(G, STEP); acc -= STEP; }
-      if (steps > 5) acc = 0;
-      renderFrame(G.W);
-      if ((n = (n + 1) % 2) === 0) { updateHUD(G.H, G, dt); drawMinimap(G.H, G); }
-      G.I.endFrame();
-    } catch (err) { fail(err); return; }
-    requestAnimationFrame(frame);
-  };
+  if (car) {
+  veh.updateCarDrive(car, hold(I, 'KeyW', 'KeyS'), hold(I, 'KeyA', 'KeyD'), I.down('Space'), dt, W, G);
+  sfx.engineUpdate(Math.min(1, Math.abs(car.speed) / car.max), dt);
+  } else ply.updatePlayerFoot(P, G, I, dt);
+  trf.updateTraffic(traffic, W, G, dt);
+  pds.updatePeds(peds, W, G, dt);
+  pol.updatePolice(PO, G, I, dt);
+  msn.updateMissions(M, G, dt);
+  eco.updateFares(E, G, dt);
+  G.alarm = Math.max(0, G.alarm - dt * 0.5);
+  if ((G.saveT += dt) > 10) { G.saveT = 0; save(G); }
+  fx.updateEffects(W, dt);
+  fx.updateHurtFx();
+  hud.updateHUD(H, G, dt);
+  if (H.frame % 2 === 0) hud.drawMinimap(H, G);
+  wld.updateCamera(W, I, car ? { x: car.x, z: car.z, y: 1.3, dist: 8.5 }
+  : { x: P.pos.x, z: P.pos.z, y: PC.camHeight, dist: PC.camDistFoot }, dt);
+  wld.renderFrame(W);
+ }
+ let last = 0, acc = 0;
+ function frame(now) {
+  try {
   requestAnimationFrame(frame);
+  const t = now * 0.001;
+  acc = Math.min(0.25, acc + (last ? t - last : STEP));
+  last = t;
+  for (let n = 0; acc >= STEP && n < 5; n += 1) { step(STEP); acc -= STEP; }
+  if (acc >= STEP) acc = 0;
+  I.endFrame();
+  } catch (e) { fail(e); }
+ }
+ const name = G.shot && sht.applyShot(G.shot, G);
+ if (name) requestAnimationFrame(() => requestAnimationFrame(() => {
+  window.__shotReady = true;
+  document.title = 'SB-' + name + '-ok';
+ }));
+ else if (!G.shot) { showHud(H, false); showP(H, 'title'); }
+ requestAnimationFrame(frame);
 }
-
-function fail(err) {
-  const msg = String((err && err.message) || err).slice(0, 100);
-  document.title = 'SB-error-' + msg;
-  const box = $('booterror');
-  if (box) { box.textContent = msg; box.classList.add('show'); }
-}
-
-try { boot(); } catch (err) { fail(err); }
+try {
+ boot();
+} catch (e) { fail(e); }

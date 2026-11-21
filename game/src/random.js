@@ -1,27 +1,23 @@
-// Solara Bay — deterministic randomness. One seed drives the city, traffic,
-// pedestrians and every screenshot scene, so the same seed is the same bay.
+// Solara Bay — small deterministic random helpers so a seed always builds the same city.
 
-/**
- * mulberry32: 32-bit state, tiny and fast, good enough for city dressing.
- */
 export function makeRng(seed) {
-  let state = (Number(seed) || 0) >>> 0;
+  let state = (typeof seed === 'number' ? seed : hashString(String(seed ?? 0))) >>> 0;
 
-  const next = () => {
+  function next() {
     state = (state + 0x6d2b79f5) >>> 0;
     let t = state;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-
-  const range = (a, b) => a + (b - a) * next();
+  }
 
   return {
     next,
-    range,
+    range(a, b) {
+      return a + (b - a) * next();
+    },
     int(a, b) {
-      return Math.floor(range(a, b + 1));
+      return Math.floor(a + (b - a + 1) * next());
     },
     pick(arr) {
       return arr[Math.floor(next() * arr.length)];
@@ -35,15 +31,11 @@ export function makeRng(seed) {
   };
 }
 
-/**
- * Stable 32-bit hash of a string (FNV-1a), used to derive sub-seeds.
- */
 export function hashString(s) {
   let h = 0x811c9dc5;
-  const text = String(s);
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
   }
   return h >>> 0;
 }

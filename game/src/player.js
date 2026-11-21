@@ -1,331 +1,323 @@
-// Solara Bay — the player body: a blocky low-poly local with a coral shirt and
-// sunglasses band, his on-foot control, and both guns. Shared-state changes go
-// through named G callbacks (damagePed, damageCop, damageTrafficCar, wasted).
+// Solara Bay — the player: a small low-poly body, on-foot movement,
+// the weapon in her hand and what happens when she gets hit. Third person only.
+
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { C, material } from './palette.js';
 import { resolveMove } from './world.js';
-const RADIUS = 0.5;      // shoulder width
-const AIM_CLEAR = 1.2;   // aim ray starts past his own chest
-const TURN_RATE = 14;    // rad/s toward the camera yaw
-const SWING_RATE = 7.4;  // gait frequency per metre travelled
-/** Build the character at the city start pad; P.pos is the simulation truth. */
-  export function createPlayer(W, city) {
-  const start = (city && city.spawns && city.spawns.playerStart) || { x: 0, z: 8 };
+
+// How far the arm swings at full sprint, in radians, and how fast the cycle runs.
+const ARM_SWING = 0.85;
+const LEG_SWING = 0.75;
+const STRIDE_RATE = 2.3;
+const EYE_HEIGHT = 1.55;
+const BODY_RADIUS = 0.5;
+
+// Limbs are pivoted groups so the swing rotates around the shoulder or the hip,
+// not around the middle of the mesh.
+function limb(width, length, depth, paint, jointY) {
   const group = new THREE.Group();
-  group.name = 'player';
-  const figure = new THREE.Group();
-  group.add(figure);
-  const skin = C.skin[0];
-  const denim = C.pants[0];
-  const shirt = C.shirt[0];
-  const add = (mesh) => figure.add(mesh);
-  add(box(0.72, 0.78, 0.42, shirt, 0.98));   // torso
-  add(box(0.66, 0.14, 0.44, 0x232a33, 1.3)); // sunglasses band
-  add(box(0.2, 0.14, 0.2, skin, 1.4));       // neck
-  add(box(0.46, 0.44, 0.44, skin, 1.56));    // head
-  add(box(0.48, 0.16, 0.46, 0xf4f1e4, 1.84)); // cap crown
-  add(box(0.5, 0.06, 0.24, 0xf4f1e4, 1.78)).position.z = 0.3; // cap brim
-  add(box(0.66, 0.24, 0.4, denim, 0.62));    // hips
-  const legL = limb(0.26, 0.58, denim, -0.18, 0.62);
-  const legR = limb(0.26, 0.58, denim, 0.18, 0.62);
-  const armL = limb(0.18, 0.62, skin, -0.46, 1.3);
-  const armR = limb(0.18, 0.62, skin, 0.46, 1.3);
-  figure.add(legL.pivot, legR.pivot, armL.pivot, armR.pivot);
-  const bootL = shoe(-0.18);
-  const bootR = shoe(0.18);
-  add(bootL);
-  add(bootR);
-  // Guns live in the right hand so the arm swing carries them; hidden until aimed.
-  const pistol = gun(0.34, 0x2a2f36, 0x4a3527);
-  const rifle = gun(0.86, 0x33383f, 0x6b4f35);
-  pistol.position.set(0, -0.6, 0.16);
-  rifle.position.set(0, -0.56, 0.2);
-  armR.pivot.add(pistol, rifle);
-  const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, 0, 0.82);
-  armR.pivot.add(muzzle);
-  group.traverse((o) => {
-    if (o.isMesh) o.castShadow = true;
-  });
-  group.position.set(start.x, 0, start.z);
-  W.scene.add(group);
-  const P = {
-    group, figure, pos: { x: start.x, z: start.z }, yaw: 0,
-    hp: CONFIG.player.hp, armor: 0, weapon: 'pistol', rifle: false, ammo: 0,
-    dead: false, cooldown: 0, aim: false, walkT: 0, radius: RADIUS, speed: 0,
-    muzzle, rig: { figure, legL, legR, armL, armR, bootL, bootR, pistol, rifle },
-  };
-  syncRig(P, 0);
-  return P;
-  }
-  /** A limb hanging from a hip or shoulder pivot, so rotation.x is a real swing. */
-  function limb(w, len, hex, x, topY) {
-  const pivot = new THREE.Group();
-  pivot.position.set(x, topY, 0);
-  const seg = box(w, len, w * 0.92, hex, 0);
-  seg.position.y = -len / 2;
-  pivot.add(seg);
-  return { pivot };
-  }
-  function shoe(x) {
-  const m = box(0.28, 0.16, 0.4, 0x3a3f46, 0);
-  m.position.set(x, 0.08, 0.07);
-  return m;
-  }
-  /** Pistol or rifle: barrel box, wooden stock, magazine on the long one. */
-  function gun(len, hex, gripHex) {
-  const g = new THREE.Group();
-  g.add(box(0.09, 0.11, len, hex, 0));
-  const stock = box(0.09, 0.13, 0.3, gripHex, -0.05);  stock.position.z = -len * 0.5 - 0.1;
-  g.add(stock);
-  if (len > 0.5) {
-    const mag = box(0.08, 0.2, 0.12, 0x22262b, -0.12);
-    mag.position.z = 0.1;
-    g.add(mag);
-  }
-  g.visible = false;
-  return g;
-  }
-  function box(w, h, d, hex, y) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material(hex));
-  mesh.position.y = y;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, length, depth), paint);
+  mesh.position.y = -length / 2;
   mesh.castShadow = true;
-  return mesh;
+  group.add(mesh);
+  group.position.y = jointY;
+  return group;
+}
+
+function buildCharacterMesh() {
+  const root = new THREE.Group();
+  const skin = material(C.skin[0]);
+  const shirt = material(C.shirt[0]);
+  const pants = material(C.pants[0]);
+
+  // Torso: the coral shirt.
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.72, 0.34), shirt);
+  torso.position.y = 1.16;
+  torso.castShadow = true;
+  root.add(torso);
+
+  // Hips.
+  const hips = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.26, 0.32), pants);
+  hips.position.y = 0.72;
+  hips.castShadow = true;
+  root.add(hips);
+
+  // Head + a dark sunglasses band across the eyes.
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.32), skin);
+  head.position.y = 1.74;
+  head.castShadow = true;
+  root.add(head);
+  const shades = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.1, 0.1), material(0x1d2226));
+  shades.position.set(0, 1.77, 0.17);
+  root.add(shades);
+
+  // Short dark hair, worn as a cap of its own.
+  const hair = new THREE.Mesh(new THREE.BoxGeometry(0.37, 0.12, 0.35), material(0x30241c));
+  hair.position.y = 1.94;
+  hair.castShadow = true;
+  root.add(hair);
+
+  const armL = limb(0.17, 0.62, 0.17, skin, 1.46);
+  armL.position.x = -0.4;
+  const armR = limb(0.17, 0.62, 0.17, skin, 1.46);
+  armR.position.x = 0.4;
+  const legL = limb(0.19, 0.72, 0.2, pants, 0.7);
+  legL.position.x = -0.15;
+  const legR = limb(0.19, 0.72, 0.2, pants, 0.7);
+  legR.position.x = 0.15;
+  root.add(armL, armR, legL, legR);
+
+  // Pistol barrel, held in the right hand, pointing along +Z when aimed.
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.34), material(0x3b4148));
+  gun.position.set(0.4, 1.2, 0.26);
+  root.add(gun);
+
+  return { root, armL, armR, legL, legR, gun };
+}
+
+export function createPlayer(W, city) {
+  const parts = buildCharacterMesh();
+  const start = (city && city.spawns && city.spawns.playerStart) || { x: -40, z: -8 };
+  parts.root.position.set(start.x, 0, start.z);
+  W.scene.add(parts.root);
+
+  const P = {
+    group: parts.root,
+    parts,
+    pos: { x: start.x, y: 0, z: start.z },
+    yaw: 0,
+    hp: CONFIG.player.hp,
+    armor: 0,
+    weapon: 'pistol',
+    rifle: false,
+    ammo: 0,
+    dead: false,
+    cooldown: 0,
+    aim: false,
+    walkT: 0,
+    hurtT: 0,
+  };
+  return P;
+}
+
+// Camera-relative WASD. The body always faces the way the camera looks, so the
+// shoulder view and the aim agree.
+export function updatePlayerFoot(P, G, I, dt) {
+  if (P.dead) return;
+  const walk = CONFIG.player.walk;
+  const sprint = CONFIG.player.sprint;
+  const view = G && G.W ? G.W.view : null;
+  const camYaw = view ? view.yaw : 0;
+
+  // Forward in world space is the direction the camera looks along -Z.
+  const fx = -Math.sin(camYaw);
+  const fz = -Math.cos(camYaw);
+  const rx = -fz;
+  const rz = fx;
+
+  let moveX = 0;
+  let moveZ = 0;
+  if (I) {
+    if (I.down('KeyW')) { moveX += fx; moveZ += fz; }
+    if (I.down('KeyS')) { moveX -= fx; moveZ -= fz; }
+    if (I.down('KeyD')) { moveX += rx; moveZ += rz; }
+    if (I.down('KeyA')) { moveX -= rx; moveZ -= rz; }
   }
-/* gait */
-/** Copy the simulation onto the rig: legs swing by distance walked, arms roll
- * opposite, the right arm rises to shoulder height while aiming so the barrel
- * follows the yaw, and a dead body settles flat. */
-export function syncRig(P, dt) {
-  const r = P.rig;
+  const pressing = moveX !== 0 || moveZ !== 0;
+  const dash = !!I && (I.down('ShiftLeft') || I.down('ShiftRight'));
+  const speed = dash ? sprint : walk;
+
+  if (pressing) {
+    const len = Math.hypot(moveX, moveZ) || 1;
+    moveX /= len;
+    moveZ /= len;
+    const step = speed * dt;
+    const moved = resolveMove(G.W, P.pos.x, P.pos.z, BODY_RADIUS, moveX * step, moveZ * step);
+    P.pos.x = moved.x;
+    P.pos.z = moved.z;
+    P.walkT += dt * STRIDE_RATE * (speed / walk);
+  } else {
+    P.walkT += dt * 1.2;
+  }
+
+  // Face the camera, unless the aim is already pointing somewhere else this frame.
+  P.yaw = camYaw;
+  P.aim = !!I && I.locked;
+
+  const swing = pressing ? Math.sin(P.walkT) : Math.sin(P.walkT) * 0.12;
+  const amp = pressing ? (dash ? 1 : 0.72) : 0.12;
+  P.parts.legL.rotation.x = swing * LEG_SWING * amp;
+  P.parts.legR.rotation.x = -swing * LEG_SWING * amp;
+  P.parts.armL.rotation.x = -swing * ARM_SWING * amp;
+  // The gun arm stays half-raised forward while aiming, or swings when running.
+  P.parts.armR.rotation.x = P.aim ? -0.9 + swing * 0.1 : swing * ARM_SWING * amp;
+  P.parts.gun.visible = P.aim;
+
   P.group.position.set(P.pos.x, 0, P.pos.z);
   P.group.rotation.y = P.yaw;
-  const pace = P.dead ? 0 : Math.max(0, P.speed);
-  P.walkT += pace * dt * SWING_RATE;
-  const swing = Math.sin(P.walkT) * Math.min(0.95, 0.18 + pace * 0.11);
-  r.legL.pivot.rotation.x = swing;
-  r.legR.pivot.rotation.x = -swing;
-  r.bootL.position.z = 0.07 + swing * 0.18;
-  r.bootR.position.z = 0.07 - swing * 0.18;
-  const armed = !P.dead && (P.aim || P.cooldown > 0.12);
-  const armTarget = armed ? -Math.PI / 2 : -swing * 0.85;
-  r.armR.pivot.rotation.x += (armTarget - r.armR.pivot.rotation.x) * 0.45;
-  r.armR.pivot.rotation.z -= r.armR.pivot.rotation.z * 0.4;
-  r.armL.pivot.rotation.x = -r.armR.pivot.rotation.x * (armed ? 0.25 : 1);
-  const show = armed || P.cooldown > 0;
-  r.pistol.visible = show && !P.rifle;
-  r.rifle.visible = show && P.rifle;
-  r.figure.position.y = Math.cos(P.walkT * 2) * 0.03 * Math.min(1, pace * 0.4);
-  r.figure.rotation.z = Math.sin(P.walkT) * 0.045 * Math.min(1, pace * 0.35);
-  r.figure.rotation.x += ((P.dead ? -1.42 : 0) - r.figure.rotation.x) * 0.3;
-  if (P.dead) r.figure.position.y += (0.34 - r.figure.position.y) * 0.3;
+
+  if (P.cooldown > 0) P.cooldown = Math.max(0, P.cooldown - dt);
+  if (P.hurtT > 0) P.hurtT = Math.max(0, P.hurtT - dt);
+  P.pos.y = 0;
 }
-/* foot control */
-/** WASD read in the camera frame, Shift to sprint, body turning toward the
- * camera yaw (which is also where shots go), collisions at radius 0.5. */
-export function updatePlayerFoot(P, G, I, dt) {
-  const camYaw = (G.W && G.W.cam && G.W.cam.yaw) || 0;
-  P.cooldown = Math.max(0, P.cooldown - dt);
-  if (P.dead) { P.speed = 0; syncRig(P, dt); return; }
-  let fwd = 0, side = 0;
-  if (I) {
-    if (I.down('KeyW') || I.down('ArrowUp')) fwd += 1;
-    if (I.down('KeyS') || I.down('ArrowDown')) fwd -= 1;
-    if (I.down('KeyD') || I.down('ArrowRight')) side += 1;
-    if (I.down('KeyA') || I.down('ArrowLeft')) side -= 1;
-  }
-  const sprint = !!(I && (I.down('ShiftLeft') || I.down('ShiftRight')));
-  const maxSpeed = sprint ? CONFIG.player.sprint : CONFIG.player.walk;
-  const sy = Math.sin(camYaw), cy = Math.cos(camYaw);
-  let dx = -sy * fwd + cy * side, dz = -cy * fwd - sy * side;
-  const mag = Math.hypot(dx, dz);
-  if (mag > 1e-4) { dx /= mag; dz /= mag; } else { dx = 0; dz = 0; }
-  const want = mag > 1e-4 ? maxSpeed : 0;
-  P.speed = Math.min(maxSpeed, approach(P.speed, want, (want > 0 ? 26 : 34) * dt));
-  if (want > 0 && P.speed > 0.01) {
-    const step = P.speed * dt, fx = P.pos.x, fz = P.pos.z;
-    const moved = resolveMove(G.W, fx, fz, RADIUS, dx * step, dz * step);
-    P.pos.x = moved.x; P.pos.z = moved.z;
-    // A wall that stops him stops the gait too — no moon-walking on concrete.
-    P.speed = Math.hypot(moved.x - fx, moved.z - fz) / Math.max(dt, 1e-4);
-  } else if (P.speed < 0.02) P.speed = 0;
-  P.yaw = turnToward(P.yaw, camYaw, TURN_RATE * dt);
-  P.aim = !!(I && (I.locked || I.aimed));
-  syncRig(P, dt);
+
+// Eye position and aim direction, shared by the raycast and the tracer.
+function aimRay(P, G) {
+  const pitch = G && G.W && G.W.view ? G.W.view.pitch : 0;
+  const eye = new THREE.Vector3(P.pos.x, EYE_HEIGHT, P.pos.z);
+  const dir = new THREE.Vector3(-Math.sin(P.yaw), -Math.sin(pitch), -Math.cos(P.yaw));
+  dir.normalize();
+  return { eye, dir };
 }
-/* shooting */
-/** Fire whatever is equipped. Returns {hit, point, kind, target}; kind is
- * 'ped' | 'cop' | 'car' | 'wall' | 'miss'. The nearest blocker wins, so a shot
- * never passes through a wall or a bystander. */
-export function fireWeapon(P, G) {
-  const out = { hit: false, point: { x: 0, y: 0, z: 0 }, kind: null, target: null };
-  if (P.dead) return out;
-  const w = P.rifle ? CONFIG.weapons.rifle : CONFIG.weapons.pistol;
-  if (P.cooldown > 0) return out;
-  if (!w.infinite && P.ammo <= 0) { P.cooldown = 0.35; if (G.sound && G.sound.honk) G.sound.honk(0.3); return out; }
-  P.cooldown = 1 / w.rate;
-  if (!w.infinite) P.ammo = Math.max(0, P.ammo - 1);
-  // Direction: camera yaw with the camera pitch folded in, plus config spread.
-  const cam = (G.W && G.W.cam) || { yaw: P.yaw, pitch: 0.2 };
-  const jit = () => (Math.random() - 0.5) * 2 * w.spread;
-  const yaw = cam.yaw + jit(), pitch = (cam.pitch || 0) + jit(), cp = Math.cos(pitch);
-  const dir = { x: -Math.sin(yaw) * cp, y: -Math.sin(pitch), z: -Math.cos(yaw) * cp };
-  P.group.updateMatrixWorld(true);
-  const eye = new THREE.Vector3();
-  P.muzzle.getWorldPosition(eye);
-  const oy = eye.y > 0.6 ? eye.y : 1.5;
-  const sx = P.pos.x + dir.x * AIM_CLEAR, sz = P.pos.z + dir.z * AIM_CLEAR;
-  let bestT = wallDistance(G.W, sx, oy, sz, dir, P.rifle ? 120 : 80);
-  let kind = 'wall', target = null;
-  const test = (x, z, y, r, k, obj) => {
-    const t = raySphere(sx, oy, sz, dir, x, y, z, r);
-    if (t >= 0 && t < bestT) { bestT = t; kind = k; target = obj; }
+
+// Ray against every target the game keeps. Traffic cars sit on the same list as
+// the player's, so shooting someone's sedan counts. Returns the nearest hit.
+function raycastTargets(P, G, eye, dir, reach, radius, skippable) {
+  let best = null;
+  const check = (body, kind, list) => {
+    if (!body) return;
+    if (skippable && skippable(body)) return;
+    if (body.dead || body.state === 'down') return;
+    const tx = body.x !== undefined ? body.x : body.pos && body.pos.x;
+    const tz = body.z !== undefined ? body.z : body.pos && body.pos.z;
+    if (tx === undefined || tz === undefined) return;
+    const dx = tx - eye.x;
+    const dz = tz - eye.z;
+    const along = dx * dir.x + dz * dir.z;
+    if (along <= 0 || along > reach) return;
+    const side = Math.abs(dx * dir.z - dz * dir.x);
+    if (side > radius) return;
+    if (!best || along < best.dist) best = { dist: along, kind, target: body, list };
   };
-  for (const cop of (G.PO && G.PO.foot) || []) {
-    if (cop.down || cop.hp <= 0) continue;
-    const c = cop.pos || cop;
-    test(c.x, c.z, 1.1, 0.75, 'cop', cop);
-  }
-  for (const ped of G.peds || []) {
-    if (ped.state === 'down' || ped.hp <= 0) continue;
-    const c = ped.pos || ped;
-    test(c.x, c.z, 1.0, 0.7, 'ped', ped);
-  }
-  for (const car of [...(G.cars || []), ...(G.traffic || [])]) {
-    test(car.x, car.z, 0.9, car.radius || CONFIG.car.radius, 'car', car);
-  }
-  const end = { x: sx + dir.x * bestT, y: oy + dir.y * bestT, z: sz + dir.z * bestT };
-  const from = { x: eye.x, y: oy, z: eye.z };
-  if (G.effects) {
-    if (G.effects.spawnMuzzle) G.effects.spawnMuzzle(from);
-    if (G.effects.spawnTracer) G.effects.spawnTracer(from, end);
-  }
-  if (G.sound && G.sound.shot) G.sound.shot(P.rifle);
-  out.point = end;
-  if (target) {
-    out.hit = true; out.kind = kind; out.target = target;
-    if (kind === 'ped') G.damagePed && G.damagePed(target, w.dmg, G);
-    else if (kind === 'cop') G.damageCop && G.damageCop(target, w.dmg, G);
-    else if (target.player) target.hp -= w.dmg * 0.5;
-    else G.damageTrafficCar && G.damageTrafficCar(target, w.dmg, G);
-    if (kind === 'car' && G.effects && G.effects.spawnSmokePuff) G.effects.spawnSmokePuff(end, 0.4);
-  } else out.kind = 'miss';
-  // Gunfire draws every badge in the bay, hit or miss.
-  G.alarm = 1; G.alarmX = P.pos.x; G.alarmZ = P.pos.z;
-  return out;
-}
-/** Distance to the nearest building face along the ray, else the range. */
-function wallDistance(W, x, y, z, dir, range) {
-  let best = range;
-  for (const b of (W && W.colliders) || []) {
-    if (y > b.h) continue;
-    const t = rayBox(x, z, dir.x, dir.z, b);
-    if (t >= 0 && t < best) best = t;
-  }
+
+  const traffic = (G && G.traffic) || [];
+  for (const car of traffic) check(car, 'traffic', traffic);
+  const peds = (G && G.peds) || [];
+  for (const ped of peds) check(ped, 'ped', peds);
+  const police = G && G.PO;
+  const foot = (police && police.foot) || [];
+  for (const cop of foot) check(cop, 'cop', foot);
   return best;
 }
-/** Flat slab test; entry distance, or -1 when the ray misses the footprint. */
-function rayBox(x, z, dx, dz, b) {
-  let tmin = -1e9, tmax = 1e9;
-  for (const [o, d, lo, hi] of [[x, dx, b.minX, b.maxX], [z, dz, b.minZ, b.maxZ]]) {
-    if (Math.abs(d) < 1e-6) { if (o < lo || o > hi) return -1; continue; }
-    let a = (lo - o) / d, c = (hi - o) / d;
-    if (a > c) { const s = a; a = c; c = s; }
-    tmin = Math.max(tmin, a); tmax = Math.min(tmax, c);
+
+export function fireWeapon(P, G) {
+  const cfg = CONFIG.weapons[P.weapon] || CONFIG.weapons.pistol;
+  if (!G || P.dead || P.cooldown > 0) return { hit: false };
+
+  // A rifle has to be fed; the pistol never runs dry.
+  if (!cfg.infinite) {
+    if (P.ammo <= 0) {
+      if (G.sound && G.sound.click) G.sound.click();
+      P.cooldown = 0.35;
+      return { hit: false };
+    }
+    P.ammo -= 1;
   }
-  return tmax < 0 || tmin > tmax ? -1 : Math.max(0, tmin);
+  P.cooldown = 1 / cfg.rate;
+
+  const { eye, dir } = aimRay(P, G);
+  // Spread: a small random wobble on the aim, tighter for the pistol.
+  const jitter = cfg.spread;
+  dir.x += (Math.random() * 2 - 1) * jitter;
+  dir.y += (Math.random() * 2 - 1) * jitter;
+  dir.z += (Math.random() * 2 - 1) * jitter;
+  dir.normalize();
+
+  const muzzle = new THREE.Vector3(
+    eye.x + dir.x * 0.6,
+    eye.y - 0.12 + dir.y * 0.6,
+    eye.z + dir.z * 0.6,
+  );
+
+  if (G.sound && G.sound.shot) G.sound.shot();
+
+  const reach = P.weapon === 'rifle' ? 90 : 60;
+  const hit = raycastTargets(P, G, eye, dir, reach, 0.85, (body) => body.player);
+  const end = hit
+    ? new THREE.Vector3(eye.x + dir.x * hit.dist, eye.y + dir.y * hit.dist, eye.z + dir.z * hit.dist)
+    : new THREE.Vector3(eye.x + dir.x * reach, eye.y + dir.y * reach, eye.z + dir.z * reach);
+
+  if (G.effects) {
+    G.effects.spawnMuzzle(muzzle);
+    G.effects.spawnTracer(muzzle, end);
+  }
+
+  // Gunfire is loud: the neighbourhood pricks up its ears wherever you are.
+  G.alarm = 1;
+  G.alarmX = P.pos.x;
+  G.alarmZ = P.pos.z;
+
+  if (!hit) return { hit: false, point: end, kind: null, target: null };
+
+  if (hit.kind === 'ped') {
+    const ped = hit.target;
+    ped.hp = (ped.hp || CONFIG.peds.hp) - cfg.dmg;
+    const killed = ped.hp <= 0;
+    ped.state = killed ? 'down' : 'flee';
+    ped.fleeT = 4;
+    ped.hitBy = 'shot';
+    if (G.damagePed) G.damagePed(ped, cfg.dmg, killed);
+    if (killed && G.onPedKill) G.onPedKill(ped);
+  } else if (hit.kind === 'cop') {
+    if (G.damageCop) G.damageCop(hit.target, cfg.dmg);
+  } else if (hit.kind === 'traffic') {
+    if (G.damageTrafficCar) G.damageTrafficCar(hit.target, cfg.dmg);
+  }
+
+  return { hit: true, point: end, kind: hit.kind, target: hit.target };
 }
-/** Ray against a target sphere of radius r; entry distance or -1. */
-function raySphere(ox, oy, oz, d, cx, cy, cz, r) {
-  const lx = cx - ox, ly = cy - oy, lz = cz - oz;
-  const proj = lx * d.x + ly * d.y + lz * d.z;
-  if (proj < 0) return -1;
-  const perp = lx * lx + ly * ly + lz * lz - proj * proj;
-  return perp > r * r ? -1 : proj - Math.sqrt(Math.max(0, r * r - perp));
-}
-/* damage */
-/** Take a hit: armour soaks 60% until spent, the rest lands on health. Zero
- * health is the game's problem, not this module's — call wasted(). */
+
 export function damagePlayer(P, amt, G) {
   if (P.dead || amt <= 0) return;
-  let left = amt;
+  let rest = amt;
   if (P.armor > 0) {
     const soaked = Math.min(P.armor, amt * 0.6);
-    P.armor = P.armor - soaked < 0.01 ? 0 : P.armor - soaked;
-    left = amt - soaked;
+    P.armor = Math.max(0, P.armor - soaked);
+    rest = amt - soaked;
   }
-  P.hp -= left;
-  if (G.effects && G.effects.flashDamage) G.effects.flashDamage();
-  if (P.hp <= 0) { P.hp = 0; P.dead = true; if (G.wasted) G.wasted(); }
+  P.hp = Math.max(0, P.hp - rest);
+  P.hurtT = 0.2;
+  if (G && G.effects && G.effects.flashDamage) G.effects.flashDamage();
+  if (P.hp <= 0 && !P.dead) {
+    P.dead = true;
+    if (G && G.wasted) G.wasted();
+  }
 }
-/** Back on his feet. `where` is a point, a marker name ('hospital', 'station',
- * 'glassOrchid', 'vineMart') or nothing for the start pad. */
+
 export function respawnPlayer(P, G, where) {
-  const spot = pickSpawn(G && G.city, where);
-  P.pos.x = spot.x; P.pos.z = spot.z;
-  P.hp = spot.full ? CONFIG.player.hp : Math.max(30, CONFIG.player.hp * 0.6);
-  P.dead = false; P.cooldown = 0.4; P.speed = 0; P.walkT = 0;
-  if (spot.yaw !== undefined) P.yaw = spot.yaw;
+  const spot = where || (G && G.city && G.city.places && G.city.places.hospital) || { x: -40, z: -8 };
+  P.pos.x = spot.x;
+  P.pos.z = spot.z;
+  P.pos.y = 0;
+  P.hp = CONFIG.player.hp;
+  P.dead = false;
+  P.cooldown = 0;
+  P.walkT = 0;
+  P.hurtT = 0;
+  if (P.armor < 0) P.armor = 0;
+  P.group.visible = true;
   P.group.position.set(P.pos.x, 0, P.pos.z);
-  P.group.rotation.y = P.yaw;
-  P.figure.rotation.x = 0;
-  if (G && G.W && G.W.cam) {
-    G.W.cam.yaw = P.yaw;
-    G.W.cam.target.set(P.pos.x, CONFIG.player.camHeight, P.pos.z);
-  }
-  syncRig(P, 0);
+  P.group.rotation.set(0, P.yaw, 0);
+  P.parts.armL.rotation.x = 0;
+  P.parts.armR.rotation.x = 0;
+  P.parts.legL.rotation.x = 0;
+  P.parts.legR.rotation.x = 0;
+  if (G && G.W && G.W.view) G.W.view.ready = false;
 }
-function pickSpawn(city, where) {
-  const start = (city && city.spawns && city.spawns.playerStart) || { x: 0, z: 8 };
-  const mk = (city && city.markers) || {};
-  const base = { x: start.x, z: start.z, full: true };
-  if (!where) return base;
-  if (typeof where === 'object') {
-    return { x: where.x ?? base.x, z: where.z ?? base.z, full: where.full !== false, yaw: where.yaw };
-  }
-  const near = (m, dz) => (m ? { x: m.x, z: m.z + dz, full: false } : base);
-  if (where === 'hospital') return near(mk.hospital, 9);
-  if (where === 'station') return near(mk.station, 9);
-  if (where === 'glassOrchid') return near(mk.glassOrchid, 8);
-  if (where === 'vineMart') return near(mk.vineMart, 8);
-  return base;
-}
-/* pickups */
-/** Give the player an item: the park rifle (flag only — the pistol stays
- * equipped), rounds, armour, a medkit or cash. */
+
+// Pickups from the crate in Verde Park (or the shop) flow through here.
 export function givePickup(P, G, item) {
-  if (!item) return false;
-  const kind = typeof item === 'string' ? item : item.item || item.kind;
-  const amount = (item && item.amount) || 0;
-  const H = G && G.H;
-  if (kind === 'rifle') { P.rifle = true; if (P.ammo <= 0) P.ammo = 30; toast(H, 'Rifle in hand'); }
-  else if (kind === 'ammo') { const n = amount || CONFIG.weapons.rifle.ammoPerBuy; P.ammo += n; toast(H, `+${n} rounds`); }
-  else if (kind === 'armor') { P.armor = Math.min(100, P.armor + (amount || 50)); toast(H, 'Body armour on'); }
-  else if (kind === 'medkit') { P.hp = Math.min(CONFIG.player.hp, P.hp + (amount || 45)); toast(H, 'Patched up'); }
-  else if (kind === 'cash') {
-    const n = amount || 25;
-    if (G.addMoney && G.E) G.addMoney(G.E, n, H); else if (G.E) G.E.money += n;
-    toast(H, `+$${n}`);
-  } else return false;
-  if (G.sound && G.sound.chime) G.sound.chime();
-  return true;
-}
-function toast(H, txt) {
-  if (!H) return;
-  if (H.toast) H.toast(txt);
-  else if (H.setBanner) H.setBanner(txt, 1800);
-}
-/* helpers */
-function approach(v, target, step) {
-  if (v < target) return Math.min(target, v + step);
-  if (v > target) return Math.max(target, v - step);
-  return v;
-}
-/** Rotate a toward b the short way, at most maxStep radians. */
-function turnToward(a, b, maxStep) {
-  let d = b - a;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return Math.abs(d) <= maxStep ? b : a + Math.sign(d) * maxStep;
+  if (!item) return;
+  const kind = typeof item === 'string' ? item : item.kind || item.type;
+  if (kind === 'rifle') {
+    P.rifle = true;
+    P.weapon = 'rifle';
+  } else if (kind === 'ammo') {
+    P.ammo += CONFIG.weapons.rifle.ammoPerBuy;
+  } else if (kind === 'armor') {
+    P.armor = Math.min(100, P.armor + 100);
+  } else if (kind === 'medkit' || kind === 'health') {
+    P.hp = Math.min(CONFIG.player.hp, P.hp + 60);
+  }
 }
