@@ -1,69 +1,68 @@
-// Every tunable number in Solara Bay lives here, so balance changes stay in one place.
-// Units: metres, seconds, degrees/second as noted, money in dollars.
+// Every number that shapes Solara Bay lives here, so tuning never means
+// hunting through gameplay code.
 
 export const CONFIG = {
   world: {
-    half: 200,          // playable ground spans [-half, half] on x and z
-    sea: -172,          // ocean starts west of this x
-    pitch: 80,          // distance between parallel streets on each axis
-    roadHalf: 6,        // asphalt half-width (12 m streets)
-    sidewalk: 3,        // sidewalk depth either side of the asphalt
-    blockUsable: 68,    // buildable inner size of one city block
+    half: 200,
+    sea: -172,
+    pitch: 80,
+    roadHalf: 6,
+    sidewalk: 3,
+    blockUsable: 68,
     parkRect: { minX: -74, maxX: -6, minZ: -74, maxZ: -6 },
+    fogNear: 160,
+    fogFar: 640,
   },
-
   player: {
-    walk: 4.4,          // m/s on foot
+    walk: 4.4,
     sprint: 7.0,
     hp: 100,
-    camDistFoot: 5.5,   // third-person camera distance on foot
-    camHeight: 1.6,     // eye height
+    camDistFoot: 5.5,
+    camHeight: 1.6,
+    radius: 0.55,
   },
-
   weapons: {
     pistol: { dmg: 34, rate: 3, spread: 0.012, infinite: true },
-    rifle:  { dmg: 25, rate: 8, spread: 0.02, ammoPerBuy: 60 },
+    rifle: { dmg: 25, rate: 8, spread: 0.02, ammoPerBuy: 60 },
   },
-
   car: {
     hp: 100,
     radius: 1.4,
     kinds: {
-      sport:  { max: 28, accel: 14, turn: 1.9 },
-      sedan:  { max: 22, accel: 9,  turn: 1.6 },
-      taxi:   { max: 23, accel: 9,  turn: 1.6 },
+      sport: { max: 28, accel: 14, turn: 1.9 },
+      sedan: { max: 22, accel: 9, turn: 1.6 },
+      taxi: { max: 23, accel: 9, turn: 1.6 },
       police: { max: 31, accel: 16, turn: 2.0 },
     },
   },
-
   traffic: {
     count: 11,
-    speed: 9,           // cruising m/s
-    laneOffset: 3.2,    // right-hand lane offset from road centre
-    probeAhead: 6,      // braking probe distance
+    speed: 9,
+    laneOffset: 3.2,
+    probeAhead: 6,
+    despawnDist: 130,
+    keepRadius: 90,
+    clearWait: 1.2,
   },
-
   peds: {
     count: 15,
     speed: 1.4,
     flee: 5.2,
     hp: 40,
+    sidewalkOffset: 1.5,
   },
-
   wanted: {
-    decay: { 1: 30, 2: 60, 3: 60, 4: 60, 5: 60 }, // seconds unseen before losing a star
-    crime: {
-      theftOccupied: 1,
-      policeCar: 2,
-      hitPed: 2,
-      shootPed: 3,
-      killPed: 3,
-      killCop: 3,
-      rampageKills: 3,   // kills within rampageWindow add one extra star
-      rampageWindow: 20,
-    },
+    decay: { 1: 30, 2: 60, 3: 60, 4: 60, 5: 60 },
+    unseenDist: 40,
+    theftOccupied: 1,
+    policeCar: 2,
+    hitPed: 2,
+    shootPed: 3,
+    killPed: 3,
+    killCop: 3,
+    rampageKills: 3,
+    rampageWindow: 20,
   },
-
   police: {
     counts: {
       1: [1, 0],
@@ -82,12 +81,9 @@ export const CONFIG = {
       arrestDist: 3.0,
       arrestHpBelow: 25,
     },
-    carChase: {
-      ram: 6,           // damage per ram
-      dropDist: 260,    // give up / despawn beyond this
-    },
+    carChase: { ram: 6, dropDist: 260, spawnMin: 60, spawnMax: 80, lead: 3 },
+    roadblock: { minStars: 4, ahead: 60, every: 20 },
   },
-
   economy: {
     start: 200,
     rifle: 600,
@@ -99,14 +95,26 @@ export const CONFIG = {
     hospitalFee: 100,
     bustedFee: 150,
     saveKey: 'solara-bay-save-v1',
+    saveEvery: 10,
+    armorCap: 100,
   },
-
   missions: {
     m1: 500,
     m2: 800,
     m3: 1500,
     m2EvadeSec: 90,
     m3DeliverySec: 120,
+  },
+  camera: {
+    pitchMin: -0.15,
+    pitchMax: 1.1,
+    distCar: 9.0,
+    heightCar: 3.2,
+    lerp: 7.5,
+    sensitivity: 0.0022,
+  },
+  hud: {
+    minimapScale: 180 / 440,
   },
 };
 

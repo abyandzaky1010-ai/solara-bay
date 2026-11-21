@@ -6,240 +6,248 @@
 <title>SOLARA BAY</title>
 <style>
   :root {
-    --ink: #f7fbff;
-    --panel: rgba(16, 24, 33, 0.62);
-    --panel-solid: rgba(16, 24, 33, 0.88);
-    --edge: rgba(255, 255, 255, 0.18);
-    --gold: #ffd24a;
-    --coral: #ff8a6b;
-    --mint: #7be0c0;
+    --ink: #f4f7fb;
+    --panel: rgba(16, 24, 36, 0.72);
+    --panel-line: rgba(255, 255, 255, 0.16);
+    --coral: #ff8a72;
+    --mint: #8ff0c4;
+    --sun: #ffd24a;
     --sky: #8fd3ff;
-    --lilac: #c8b6ff;
-    --red: #ff5a4d;
+    --rose: #ff9ec4;
   }
   * { box-sizing: border-box; }
   html, body {
-    margin: 0; height: 100%; overflow: hidden;
-    background: #9fd6f2; color: var(--ink);
-    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
-    user-select: none; -webkit-user-select: none;
+    margin: 0; height: 100%; overflow: hidden; background: #bfe3ff;
+    color: var(--ink); font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
   }
-  #app { position: absolute; inset: 0; }
+  #app { position: fixed; inset: 0; }
   #app canvas { display: block; width: 100%; height: 100%; }
-  #hud { position: absolute; inset: 0; pointer-events: none; }
-  #hud.damage::after {
+
+  #hud { position: fixed; inset: 0; pointer-events: none; }
+  #hud.hurt::after {
     content: ""; position: absolute; inset: 0;
-    box-shadow: inset 0 0 120px 30px rgba(255, 60, 48, 0.55);
-    transition: opacity 0.1s linear;
+    box-shadow: inset 0 0 160px 40px rgba(255, 60, 40, 0.65);
+    background: radial-gradient(circle at 50% 50%, rgba(255, 0, 0, 0) 55%, rgba(180, 0, 0, 0.45) 100%);
   }
+
   .panel {
-    background: var(--panel); border: 1px solid var(--edge);
-    border-radius: 10px; backdrop-filter: blur(3px);
-    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28);
-    padding: 8px 12px;
+    position: absolute; background: var(--panel); border: 1px solid var(--panel-line);
+    border-radius: 14px; padding: 12px 16px; backdrop-filter: blur(6px);
+    box-shadow: 0 10px 26px rgba(6, 14, 24, 0.35);
   }
-  #topbar {
-    position: absolute; top: 14px; left: 14px;
-    display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+
+  #topright { top: 16px; right: 16px; display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
+
+  #stars {
+    display: flex; gap: 5px; font-size: 26px; line-height: 1;
+    letter-spacing: 1px; color: rgba(255, 255, 255, 0.22);
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
   }
-  #money-row { display: flex; align-items: center; gap: 10px; }
+  #stars .on { color: var(--sun); }
+  #stars.pulse { animation: starpulse 0.5s ease-out; }
+  @keyframes starpulse {
+    0% { transform: scale(1.3); filter: brightness(1.8); }
+    100% { transform: scale(1); filter: brightness(1); }
+  }
+
   #money {
-    font: 700 26px/1 "Trebuchet MS", sans-serif;
-    color: var(--mint); letter-spacing: 0.5px;
-    text-shadow: 0 2px 0 rgba(0, 0, 0, 0.4);
+    font-size: 30px; font-weight: 700; color: var(--mint);
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45); font-variant-numeric: tabular-nums;
   }
-  #stars { font-size: 22px; letter-spacing: 3px; color: rgba(255, 255, 255, 0.25); }
-  #stars i { font-style: normal; }
-  #stars i.on { color: var(--gold); text-shadow: 0 0 10px rgba(255, 210, 74, 0.85); }
-  #stars.pulse { animation: starPulse 0.45s ease-out; }
-  @keyframes starPulse { 0% { transform: scale(1.35); } 100% { transform: scale(1); } }
-  #bars { display: flex; flex-direction: column; gap: 6px; width: 210px; }
-  .bar { height: 11px; border-radius: 6px; background: rgba(0, 0, 0, 0.45); overflow: hidden; border: 1px solid var(--edge); }
-  .bar > i { display: block; height: 100%; width: 100%; transition: width 0.18s linear; }
-  #healthbar > i { background: linear-gradient(90deg, #ff6b5b, #ffb27a); }
-  #armorbar > i { background: linear-gradient(90deg, #5ea9ff, #a8e0ff); }
-  #weapon {
-    position: absolute; bottom: 18px; left: 16px;
-    font: 600 15px/1.2 "Trebuchet MS", sans-serif; color: var(--ink);
-    padding: 7px 12px; min-width: 128px;
-  }
-  #weapon b { color: var(--lilac); }
-  #speed {
-    position: absolute; bottom: 18px; left: 160px;
-    font: 700 15px/1.2 "Trebuchet MS", sans-serif; padding: 7px 12px;
-    color: var(--sky); display: none;
-  }
-  #objective {
-    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
-    padding: 8px 16px; font: 600 15px/1.35 "Trebuchet MS", sans-serif;
-    max-width: 520px; text-align: center; display: none;
-  }
-  #objective b { color: var(--gold); }
-  #timer {
-    font: 700 16px/1 "Trebuchet MS", sans-serif; color: var(--coral);
-    margin-left: 8px;
-  }
+
   #minimap {
-    position: absolute; top: 14px; right: 14px;
-    width: 180px; height: 180px; border-radius: 8px;
-    border: 2px solid rgba(255, 255, 255, 0.55);
-    background: #1a2632; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    width: 180px; height: 180px; border-radius: 12px;
+    border: 2px solid rgba(255, 255, 255, 0.3); display: block;
+    background: #cfe6d8;
   }
-  #toasts {
-    position: absolute; top: 210px; right: 18px; width: 260px;
-    display: flex; flex-direction: column; gap: 6px; align-items: flex-end;
+
+  #botleft { left: 16px; bottom: 16px; min-width: 260px; }
+  .bar {
+    height: 13px; border-radius: 7px; background: rgba(255, 255, 255, 0.14);
+    overflow: hidden; margin: 4px 0 8px;
   }
-  #toasts .toast {
-    font: 600 14px/1.3 "Trebuchet MS", sans-serif;
-    padding: 6px 11px; border-radius: 8px;
-    background: var(--panel-solid); border-left: 4px solid var(--gold);
-    opacity: 0; transition: opacity 0.35s ease;
+  .bar > i { display: block; height: 100%; width: 100%; border-radius: 7px; transition: width 0.15s linear; }
+  #healthbar > i { background: linear-gradient(90deg, #ff6a5a, var(--coral)); }
+  #armorbar > i { background: linear-gradient(90deg, #5fb6ff, var(--sky)); }
+  .row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; letter-spacing: 0.6px; text-transform: uppercase; opacity: 0.85; }
+  #weapon { color: var(--rose); font-weight: 700; }
+  #speed { color: var(--sun); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  #objective {
+    left: 50%; top: 16px; transform: translateX(-50%);
+    padding: 9px 18px; max-width: 60vw; text-align: center; font-size: 15px;
+    border-left: 4px solid var(--sun);
   }
-  #toasts .toast.show { opacity: 1; }
+  #timer { color: var(--sun); font-weight: 700; margin-left: 8px; }
+
+  #toasts { position: absolute; left: 50%; bottom: 22%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .toast {
+    background: rgba(16, 24, 36, 0.8); border: 1px solid var(--panel-line);
+    padding: 7px 16px; border-radius: 20px; font-size: 14px; white-space: nowrap;
+    animation: toastin 0.18s ease-out;
+  }
+  .toast.fade { opacity: 0; transition: opacity 0.5s linear; }
+  @keyframes toastin { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+
   #crosshair {
-    position: absolute; left: 50%; top: 50%; width: 6px; height: 6px;
-    margin: -3px 0 0 -3px; border-radius: 50%; background: #fff;
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); display: none;
+    position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px;
+    border-radius: 50%; background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 0 2px rgba(10, 18, 28, 0.55), 0 0 10px rgba(255, 255, 255, 0.5);
   }
+
+  #banner {
+    position: absolute; left: 50%; bottom: 12%; transform: translateX(-50%);
+    font-size: 17px; padding: 8px 18px; border-radius: 10px;
+    background: rgba(16, 24, 36, 0.72); border: 1px solid var(--panel-line); display: none;
+  }
+
   .screen {
-    position: absolute; inset: 0; display: none;
-    align-items: center; justify-content: center;
-    background: radial-gradient(circle at 50% 35%, rgba(20, 36, 48, 0.25), rgba(10, 18, 26, 0.82));
-    pointer-events: auto;
+    position: fixed; inset: 0; display: none; place-items: center;
+    background: linear-gradient(180deg, rgba(10, 20, 32, 0.55), rgba(10, 20, 32, 0.82));
+    z-index: 20;
   }
-  .screen.open { display: flex; }
+  .screen.on { display: grid; }
   .card {
-    background: var(--panel-solid); border: 1px solid var(--edge);
-    border-radius: 14px; padding: 30px 38px; max-width: 660px;
-    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5); text-align: center;
+    background: var(--panel); border: 1px solid var(--panel-line); border-radius: 18px;
+    padding: 26px 34px; max-width: 620px; text-align: center;
+    box-shadow: 0 24px 60px rgba(4, 10, 18, 0.5);
   }
-  .card h1 {
-    margin: 0 0 6px; font: 800 64px/1 "Trebuchet MS", sans-serif;
-    letter-spacing: 6px; color: var(--gold);
-    text-shadow: 0 4px 0 #b06a2b, 0 10px 26px rgba(0, 0, 0, 0.55);
+  .title-big {
+    font-size: 76px; line-height: 0.95; margin: 0 0 6px; letter-spacing: 3px;
+    font-weight: 800; font-family: "Georgia", "Times New Roman", serif;
+    background: linear-gradient(180deg, #ffffff, var(--sun) 55%, var(--coral));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    text-shadow: 0 6px 30px rgba(255, 180, 90, 0.25);
   }
-  .card h2 { margin: 0 0 16px; font: 500 20px/1.3 "Trebuchet MS", sans-serif; color: var(--mint); }
-  .card h3 { margin: 0 0 10px; font: 700 26px/1.2 "Trebuchet MS", sans-serif; color: var(--coral); }
-  .card p { margin: 0 0 12px; font: 15px/1.5 "Trebuchet MS", sans-serif; color: #d6e4ef; }
-  .keys { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; text-align: left; margin: 16px auto; max-width: 420px; font: 14px/1.4 "Trebuchet MS", sans-serif; }
-  .keys span:nth-child(odd) { color: var(--sky); font-weight: 700; text-align: right; }
-  .row { display: flex; gap: 12px; justify-content: center; margin-top: 18px; }
+  .tagline { font-size: 19px; color: var(--sky); margin: 0 0 18px; font-style: italic; }
+  .controls { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13.5px; text-align: left; margin: 0 auto 18px; width: fit-content; opacity: 0.9; }
+  .controls b { color: var(--mint); text-align: right; font-weight: 700; }
+  .btnrow { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
   button {
-    font: 700 16px/1 "Trebuchet MS", sans-serif; letter-spacing: 1px;
-    padding: 12px 22px; border-radius: 9px; cursor: pointer;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    background: linear-gradient(180deg, #ffd77a, #f0a640); color: #241a08;
-    pointer-events: auto;
+    font: inherit; font-size: 15px; font-weight: 700; letter-spacing: 0.6px;
+    color: #101a26; background: linear-gradient(180deg, #b8ffdd, var(--mint));
+    border: 0; border-radius: 10px; padding: 11px 22px; cursor: pointer;
+    box-shadow: 0 6px 0 rgba(60, 160, 120, 0.45);
   }
   button:hover { filter: brightness(1.08); }
-  button.ghost { background: rgba(255, 255, 255, 0.1); color: var(--ink); }
-  .foot { margin-top: 18px; font: 12px/1.4 "Trebuchet MS", sans-serif; color: rgba(214, 228, 239, 0.65); letter-spacing: 2px; }
-  .shopitem { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 8px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.12); text-align: left; }
-  .shopitem b { color: var(--gold); }
-  #error { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; padding: 40px; font: 16px/1.5 monospace; color: #ffe3e3; background: #241417; white-space: pre-wrap; }
+  button:active { transform: translateY(2px); box-shadow: 0 3px 0 rgba(60, 160, 120, 0.45); }
+  button.ghost { background: rgba(255, 255, 255, 0.12); color: var(--ink); box-shadow: 0 6px 0 rgba(0, 0, 0, 0.3); }
+  .footer { margin-top: 16px; font-size: 12px; letter-spacing: 1.4px; opacity: 0.6; text-transform: uppercase; }
+  .story { font-size: 14px; line-height: 1.5; opacity: 0.9; margin: 0 0 16px; }
+  h2.ptitle { margin: 0 0 8px; font-size: 30px; letter-spacing: 1px; color: var(--sun); font-family: Georgia, serif; }
+  #complete h2.ptitle { color: var(--mint); }
+  #busted h2.ptitle { color: var(--rose); }
+  #wasted h2.ptitle { color: var(--coral); }
+  .shoprow {
+    display: flex; justify-content: space-between; align-items: center; gap: 18px;
+    padding: 9px 12px; border-radius: 10px; margin-bottom: 8px;
+    background: rgba(255, 255, 255, 0.07);
+  }
+  .shoprow span.price { color: var(--mint); font-weight: 700; }
+  .shoprow button { padding: 7px 14px; font-size: 13px; }
 </style>
 </head>
 <body>
 <div id="app"></div>
 
 <div id="hud">
-  <div id="topbar">
-    <div class="panel" id="money-row">
-      <div id="money">$0</div>
-      <div id="stars"><i>★</i><i>★</i><i>★</i><i>★</i><i>★</i></div>
-    </div>
-    <div id="bars">
-      <div class="bar" id="healthbar"><i></i></div>
-      <div class="bar" id="armorbar"><i></i></div>
-    </div>
+  <div id="topright">
+    <div id="stars"></div>
+    <div id="money">$0</div>
+    <canvas id="minimap" width="180" height="180"></canvas>
   </div>
-  <div id="objective" class="panel"><span id="timer"></span></div>
-  <canvas id="minimap" width="180" height="180"></canvas>
+
+  <div id="objective" class="panel">Explore Solara Bay</div>
+
   <div id="toasts"></div>
-  <div id="weapon" class="panel"><b>Pistol</b> ∞</div>
-  <div id="speed" class="panel">0 km/h</div>
+  <div id="banner"></div>
   <div id="crosshair"></div>
+
+  <div id="botleft" class="panel">
+    <div class="row"><span>Health</span><span id="weapon">Pistol</span></div>
+    <div class="bar" id="healthbar"><i></i></div>
+    <div class="row"><span>Armor</span><span id="speed"></span></div>
+    <div class="bar" id="armorbar"><i></i></div>
+    <div class="row"><span id="timer-label">Solara Bay</span><span id="timer"></span></div>
+  </div>
 </div>
 
-<div id="title" class="screen open">
+<div id="title" class="screen">
   <div class="card">
-    <h1>SOLARA BAY</h1>
-    <h2>Sun, chrome, and one last job.</h2>
-    <p>Palm trees, glass towers and a harbour that never asks where the money came from. Work for Vesper, keep the police off your back, and stay out of the water.</p>
-    <div class="keys">
-      <span>W A S D</span><span>Move on foot / drive</span>
-      <span>Mouse</span><span>Look around</span>
-      <span>Shift</span><span>Sprint</span>
-      <span>E</span><span>Enter or leave a car</span>
-      <span>F</span><span>Fire</span>
-      <span>T</span><span>Taxi fares (in a taxi)</span>
-      <span>Escape</span><span>Pause</span>
+    <h1 class="title-big">SOLARA BAY</h1>
+    <p class="tagline">Sun, chrome, and one last job.</p>
+    <p class="story">Vesper left a Coral coupe in a downtown lockup.<br>Otis left a package at the pier. Both are waiting for you.</p>
+    <div class="controls">
+      <b>W A S D</b><span>Move / drive</span>
+      <b>Mouse</b><span>Look</span>
+      <b>Shift</b><span>Sprint</span>
+      <b>E</b><span>Enter / steal a car</span>
+      <b>F</b><span>Fire</span>
+      <b>T</b><span>Taxi fares</span>
+      <b>Esc</b><span>Pause</span>
     </div>
-    <div class="row">
-      <button id="btn-continue" style="display:none">CONTINUE</button>
-      <button id="btn-new">NEW GAME</button>
+    <div class="btnrow">
+      <button id="btn-continue" style="display:none">Continue</button>
+      <button id="btn-new" class="ghost">New Game</button>
     </div>
-    <div class="foot">v is for Vesper</div>
+    <div class="footer">v is for Vesper</div>
   </div>
 </div>
 
 <div id="pause" class="screen">
   <div class="card">
-    <h3>PAUSED</h3>
-    <div class="keys">
-      <span>W A S D</span><span>Move</span>
-      <span>Shift</span><span>Sprint</span>
-      <span>E</span><span>Car</span>
-      <span>F</span><span>Fire</span>
-      <span>T</span><span>Fares</span>
-      <span>R</span><span>Retry a failed mission</span>
+    <h2 class="ptitle">Paused</h2>
+    <div class="controls">
+      <b>W A S D</b><span>Move / drive</span>
+      <b>Mouse</b><span>Look</span>
+      <b>Shift</b><span>Sprint</span>
+      <b>E</b><span>Enter / leave car</span>
+      <b>F</b><span>Fire</span>
+      <b>T</b><span>Taxi fares</span>
+      <b>Esc</b><span>Resume</span>
     </div>
-    <p id="pause-save">Progress saves every ten seconds.</p>
-    <div class="row">
-      <button id="btn-resume">RESUME</button>
+    <p class="story" id="pause-save">Progress saves every 10 seconds.</p>
+    <div class="btnrow">
+      <button id="btn-resume">Resume</button>
+      <button id="btn-save" class="ghost">Save Now</button>
     </div>
   </div>
 </div>
 
 <div id="shop" class="screen">
   <div class="card">
-    <h3>VINE MART</h3>
-    <p>Cold drinks, warm cash.</p>
-    <div id="shop-list"></div>
-    <div class="row">
-      <button class="ghost" id="btn-shop-close">LEAVE</button>
-    </div>
+    <h2 class="ptitle">VINE MART</h2>
+    <p class="story">Cold drinks, warm ammo.</p>
+    <div id="shop-items"></div>
+    <div class="btnrow"><button id="btn-shop-close" class="ghost">Back</button></div>
   </div>
 </div>
 
 <div id="complete" class="screen">
   <div class="card">
-    <h3 id="complete-title">MISSION COMPLETE</h3>
-    <p id="complete-story"></p>
-    <p id="complete-reward"></p>
-    <div class="row">
-      <button id="btn-next">NEXT MISSION</button>
-    </div>
+    <h2 class="ptitle">Mission Complete</h2>
+    <p class="story" id="complete-story"></p>
+    <p class="story" id="complete-reward"></p>
+    <div class="btnrow"><button id="btn-next">Next Mission</button></div>
   </div>
 </div>
 
 <div id="busted" class="screen">
   <div class="card">
-    <h3>BUSTED</h3>
-    <p>The cuffs click. Sable Row books you, fines you, and lets you walk at dawn.</p>
-    <div class="row"><button id="btn-busted-ok">WALK OUT</button></div>
+    <h2 class="ptitle">Busted</h2>
+    <p class="story" id="busted-text">Booked at Sable Row. The fine comes out of your pocket.</p>
+    <div class="btnrow"><button id="btn-busted-ok">Pay the fine</button></div>
   </div>
 </div>
 
 <div id="wasted" class="screen">
   <div class="card">
-    <h3>WASTED</h3>
-    <p>Cedar View patched you up. The bill is waiting at the desk.</p>
-    <div class="row"><button id="btn-wasted-ok">LEAVE HOSPITAL</button></div>
+    <h2 class="ptitle">Wasted</h2>
+    <p class="story" id="wasted-text">Cedar View patched you up. The bill is on you.</p>
+    <div class="btnrow"><button id="btn-wasted-ok">Wake up</button></div>
   </div>
 </div>
-
-<div id="error"></div>
 
 <script type="importmap">
 {

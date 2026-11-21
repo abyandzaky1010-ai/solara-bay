@@ -1,410 +1,381 @@
+// Solara Bay itself: the two districts of buildings across sixteen blocks,
+// Verde Park, the palm promenade, the named places the story hangs on, and the
+// cars that start out parked there. Every piece of city geometry is born here.
+
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { C, material } from './palette.js';
-import { addCollider, STREETS } from './world.js';
+import { addCollider } from './world.js';
 
-// One job: the city itself. Meridian glass towers east, pastel Palm Ward west,
-// Verde Park in the middle-west, a palm-lined promenade, named venues and parking.
-
-const EDGE = 6;          // asphalt half-width, kept local so block maths reads plainly
-const INNER = 77;        // building line sits six metres off the block edge
+const LINES = [-160, -80, 0, 80, 160];
 const PARK = CONFIG.world.parkRect;
+const MID = 40; // centre of one 80 m block gap
 
-// ---------- small geometry helpers ----------
+// ------------------------------------------------------------------ helpers
 
-function box(w, h, d, hex, opts) {
+function box(w, h, d, hex, x, y, z, opts) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material(hex, opts));
+  mesh.position.set(x, y, z);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
 }
 
-function slab(parent, w, h, d, hex, x, y, z, opts) {
-  const m = box(w, h, d, hex, opts);
-  m.position.set(x, y, z);
-  parent.add(m);
-  return m;
+function pad(w, d, hex, x, z, y = 0.12) {
+  const slab = new THREE.Mesh(new THREE.BoxGeometry(w, 0.24, d), material(hex));
+  slab.position.set(x, y, z);
+  slab.receiveShadow = true;
+  return slab;
 }
 
-function disc(parent, radius, hex, x, y, z, opts) {
-  const m = new THREE.Mesh(new THREE.CircleGeometry(radius, 22), material(hex, opts));
-  m.rotation.x = -Math.PI / 2;
-  m.position.set(x, y, z);
-  parent.add(m);
-  return m;
+function tileSize(w, d) {
+  return { w: Math.max(14, Math.min(30, w)), d: Math.max(14, Math.min(30, d)) };
 }
 
-/** Palm: leaning trunk, five drooping frond plates, a crown. Cheap at any distance. */
-function palm(parent, x, z, height, scale = 1) {
-  const g = new THREE.Group();
-  const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.22 * scale, 0.34 * scale, height, 7),
-    material(C.trunk),
-  );
-  trunk.position.y = height / 2;
-  trunk.castShadow = true;
-  trunk.rotation.z = 0.05;
-  g.add(trunk);
+// Does a block rect touch Verde Park?
+function overlapsPark(x0, x1, z0, z1) {
+  return x1 > PARK.minX && x0 < PARK.maxX && z1 > PARK.minZ && z0 < PARK.maxZ;
+}
 
-  for (let i = 0; i < 5; i++) {
-    const angle = (i / 5) * Math.PI * 2;
-    const frond = new THREE.Mesh(new THREE.BoxGeometry(0.6 * scale, 0.1, 3.4 * scale), material(C.frond));
-    frond.castShadow = true;
-    frond.position.set(Math.cos(angle) * 1.4 * scale, height - 0.15, Math.sin(angle) * 1.4 * scale);
-    frond.rotation.y = angle;
-    frond.rotation.x = 0.32;
-    g.add(frond);
+// Cut a block into 2-4 lots with uneven splits along a random axis.
+function sliceBlock(x0, x1, z0, z1, rng) {
+  const total = rng.int(2, 4);
+  const lots = [];
+  let cursor = x0;
+  let cursorZ = z0;
+  let remaining = total;
+  const alongX = rng.chance(0.5);
+  while (remaining > 0) {
+    const share = remaining === 1 ? 1 : rng.range(0.34, 0.66);
+    if (alongX) {
+      const w = (x1 - cursor) * share;
+      lots.push({ x: cursor + w / 2, z: (z0 + z1) / 2, w, d: z1 - z0 });
+      cursor += w;
+    } else {
+      const d = (z1 - cursorZ) * share;
+      lots.push({ x: (x0 + x1) / 2, z: cursorZ + d / 2, w: x1 - x0, d });
+      cursorZ += d;
+    }
+    remaining -= 1;
+  }
+  return lots;
+}
+
+// ------------------------------------------------------------------- towers
+
+function buildTower(city, lot, rng) {
+  const scene = city.W.scene;
+  const gap = 3.4;
+  const { w, d } = tileSize(lot.w - gap * 2, lot.d - gap * 2);
+  const h = rng.range(30, 90);
+  const glassy = rng.chance(0.6);
+  const hex = glassy ? rng.pick(C.glass) : rng.pick(C.steel);
+
+  scene.add(box(w, h, d, hex, lot.x, h / 2, lot.z, glassy ? { glassy: true } : undefined));
+
+  // One cap: ledge plate plus a small mechanical room on the tall ones.
+  scene.add(box(w + 1.2, 0.9, d + 1.2, 0xb8c3cc, lot.x, h, lot.z));
+  if (h > 52) scene.add(box(w * 0.34, 2.6, d * 0.34, 0x8b96a2, lot.x, h + 0.9, lot.z));
+
+  // Vertical window ribs on the street sides only — cheap, sells the height.
+  const ribs = Math.max(3, Math.round(w / 4));
+  for (let i = 0; i < ribs; i += 1) {
+    const rx = lot.x - w / 2 + (w / (ribs - 1)) * i;
+    const rib = box(1.1, h * 0.96, 0.3, 0x517a96, rx, h / 2, lot.z + d / 2 + 0.16);
+    rib.castShadow = false;
+    scene.add(rib);
+  }
+  const sideRibs = Math.max(3, Math.round(d / 5));
+  for (let i = 0; i < sideRibs; i += 1) {
+    const rz = lot.z - d / 2 + (d / (sideRibs - 1)) * i;
+    const rib = box(0.3, h * 0.96, 1.1, 0x517a96, lot.x + w / 2 + 0.16, h / 2, rz);
+    rib.castShadow = false;
+    scene.add(rib);
   }
 
-  const crown = new THREE.Mesh(new THREE.SphereGeometry(0.6 * scale, 8, 6), material(C.frond));
-  crown.position.y = height - 0.2;
-  crown.castShadow = true;
-  g.add(crown);
-
-  g.position.set(x, 0, z);
-  g.rotation.y = x * 0.37 + z * 0.11;
-  parent.add(g);
-  return g;
+  addCollider(city.W, lot.x, lot.z, w, d, h);
+  city.buildings.push({ x: lot.x, z: lot.z, w, d, h, color: hex });
 }
 
-function bench(parent, x, z, turn) {
-  const g = new THREE.Group();
-  slab(g, 2.2, 0.12, 0.6, 0xa9713f, 0, 0.46, 0);
-  slab(g, 2.2, 0.5, 0.12, 0x9b6537, 0, 0.74, -0.26);
-  slab(g, 0.12, 0.44, 0.5, 0x4a4f57, -0.9, 0.22, 0);
-  slab(g, 0.12, 0.44, 0.5, 0x4a4f57, 0.9, 0.22, 0);
-  g.position.set(x, 0, z);
-  g.rotation.y = turn;
-  parent.add(g);
-}
+function buildHouse(city, lot, rng) {
+  const scene = city.W.scene;
+  const gap = 3.6;
+  const { w, d } = tileSize(lot.w - gap * 2, lot.d - gap * 2);
+  const h = rng.range(8, 24) - 1.1;
+  const hex = rng.pick(C.stucco);
 
-/** Flat pad with awnings and posts: the stand-in for a building we cannot walk into. */
-function padBase(parent, x, z, w, d, padHex, awningHex) {
-  slab(parent, w, 0.06, d, padHex, x, 0.03, z);
-  for (const side of [-1, 1]) {
-    slab(parent, w * 0.6, 0.14, 1.8, awningHex, x, 3.1, z + side * (d / 2 + 0.9));
-    slab(parent, 0.22, 3.1, 0.22, 0x55606b, x - w * 0.28, 1.55, z + side * (d / 2 + 1.7));
-    slab(parent, 0.22, 3.1, 0.22, 0x55606b, x + w * 0.28, 1.55, z + side * (d / 2 + 1.7));
-  }
-  return { x, z, w, d };
-}
+  scene.add(box(w, h, d, hex, lot.x, h / 2, lot.z));
+  // Oversailing roof slab shuts out the noon sun.
+  scene.add(box(w + 1.8, 1.1, d + 1.8, C.roof, lot.x, h + 0.55, lot.z));
 
-function pickHex(rng, list) {
-  return list[Math.min(list.length - 1, Math.floor(rng.next() * list.length))];
-}
-
-// ---------- districts ----------
-
-/** Steel mullions down the front and side faces, plus the crown and plant box. */
-function dressTower(parent, rng, cx, cz, w, d, height, steelHex) {
-  const stripes = Math.max(3, Math.floor(w / 4));
-  for (let i = 0; i < stripes; i++) {
-    const off = -w / 2 + (i + 0.5) * (w / stripes);
-    slab(parent, 0.35, height * 0.94, 0.3, steelHex, cx + off, height / 2, cz + d / 2 + 0.16);
-    slab(parent, 0.3, height * 0.94, 0.35, steelHex, cx + w / 2 + 0.16, height / 2, cz + off * 0.8);
-  }
-  slab(parent, w + 1.2, 1.4, d + 1.2, steelHex, cx, height + 0.7, cz);
-  slab(parent, w * 0.35, 3.2, d * 0.35, 0xb9c3cc, cx + w * 0.18, height + 2.9, cz - d * 0.18);
-  slab(parent, 0.5, rng.range(6, 16), 0.5, 0xd7dee4, cx - w * 0.25, height + 6, cz + d * 0.2);
-}
-
-/** Meridian: glass tower, steel crown, mullions on two faces, rooftop plant box. */
-function tower(parent, rng, cx, cz, w, d) {
-  const height = rng.range(30, 90);
-  const glassHex = pickHex(rng, C.glass);
-  const steelHex = pickHex(rng, C.steel);
-
-  const body = box(w, height, d, glassHex, { glassy: true });
-  body.position.set(cx, height / 2, cz);
-  parent.add(body);
-
-  dressTower(parent, rng, cx, cz, w, d, height, steelHex);
-  return { x: cx, z: cz, w, d, h: height, color: glassHex, district: 'meridian' };
-}
-
-/** Palm Ward: stucco block, warm roof slab, corner stair box, one window band per face. */
-function stuccoHouse(parent, rng, cx, cz, w, d) {
-  const height = rng.range(8, 24);
-  const wallHex = pickHex(rng, C.stucco);
-
-  const body = box(w, height, d, wallHex);
-  body.position.set(cx, height / 2, cz);
-  parent.add(body);
-
-  slab(parent, w + 1.0, 0.9, d + 1.0, C.roof, cx, height + 0.45, cz);
-  slab(parent, w * 0.4, 2.4, d * 0.4, 0xf0e6d2, cx - w * 0.2, height + 1.9, cz + d * 0.2);
-
-  const bandY = Math.max(3.2, height * 0.55);
-  slab(parent, w * 0.78, 1.5, 0.2, 0x9fb6c4, cx, bandY, cz + d / 2 + 0.12);
-  slab(parent, w * 0.78, 1.5, 0.2, 0x9fb6c4, cx, bandY, cz - d / 2 - 0.12);
-  slab(parent, 0.2, 1.5, d * 0.7, 0x9fb6c4, cx + w / 2 + 0.12, bandY, cz);
-
-  return { x: cx, z: cz, w, d, h: height, color: wallHex, district: 'palmward' };
-}
-
-/**
- * Four cells in a block: two facing the street, two behind them. Each footprint
- * is capped by its own cell, so neighbours can never intersect.
- */
-function lotsForBlock(rng, x0, x1, z0, z1) {
-  const count = rng.int(2, 4);
-  const cells = [[0, 0], [1, 0], [0, 1], [1, 1]].slice(0, count);
-  const cellW = (x1 - x0 - 2) / 2;
-  const cellD = (z1 - z0 - 2) / 2;
-  const w = Math.min(rng.range(15, 24), cellW);
-  const d = Math.min(rng.range(13, 22), cellD);
-  return cells.map(([cx, cz]) => ({
-    x: x0 + 1 + cellW * (cx + 0.5),
-    z: z0 + 1 + cellD * (cz + 0.5),
-    w,
-    d,
-  }));
-}
-
-/** One block: 2-4 lots, towers east of the middle, stucco west, colliders for all. */
-function fillBlock(W, group, rng, city, x0, x1, z0, z1) {
-  const meridian = (x0 + x1) / 2 >= 0;
-  for (const lot of lotsForBlock(rng, x0, x1, z0, z1)) {
-    const b = meridian
-      ? tower(group, rng, lot.x, lot.z, lot.w, lot.d)
-      : stuccoHouse(group, rng, lot.x, lot.z, lot.w, lot.d);
-    addCollider(W, b.x, b.z, b.w, b.d, b.h);
-    city.buildings.push(b);
-  }
-}
-
-function buildBlocks(W, rng, city) {
-  const group = new THREE.Group();
-  group.name = 'blocks';
-  W.scene.add(group);
-
-  for (let ix = 0; ix < STREETS.length - 1; ix++) {
-    const x0 = STREETS[ix] + EDGE + 3;
-    const x1 = STREETS[ix + 1] - EDGE - 3;
-    for (let iz = 0; iz < STREETS.length - 1; iz++) {
-      const z0 = STREETS[iz] + EDGE + 3;
-      const z1 = STREETS[iz + 1] - EDGE - 3;
-
-      // Verde Park owns its block outright.
-      if (x1 > PARK.minX && x0 < PARK.maxX && z1 > PARK.minZ && z0 < PARK.maxZ) continue;
-
-      // VINE MART keeps the shop block clear for its counters.
-      if (ix === 2 && iz === 2) {
-        city.lots.shop = { minX: x0, maxX: x1, minZ: z0, maxZ: z1 };
-        continue;
+  const rows = Math.max(1, Math.floor(h / 8));
+  const cols = Math.max(1, Math.floor(w / 7));
+  for (let r = 0; r < rows; r += 1) {
+    const wy = 4.2 + r * 7.4;
+    if (wy > h - 2) break;
+    for (let c = 0; c < cols; c += 1) {
+      const wx = lot.x - w / 2 + (w / cols) * (c + 0.5);
+      for (const face of [1, -1]) {
+        const win = box(1.5, 2.0, 0.3, 0x41607a, wx, wy, lot.z + face * (d / 2 + 0.12));
+        win.castShadow = false;
+        scene.add(win);
       }
+    }
+  }
 
-      fillBlock(W, group, rng, city, x0, x1, z0, z1);
+  addCollider(city.W, lot.x, lot.z, w, d, h + 1.1);
+  city.buildings.push({ x: lot.x, z: lot.z, w, d, h: h + 1.1, color: hex });
+}
+
+function fillBlocks(city, rng) {
+  const inset = 9; // 6 m road + 3 m sidewalk
+  for (let b = 0; b < LINES.length - 1; b += 1) {
+    for (let c = 0; c < LINES.length - 1; c += 1) {
+      const x0 = LINES[b] + inset;
+      const x1 = LINES[b + 1] - inset;
+      const z0 = LINES[c] + inset;
+      const z1 = LINES[c + 1] - inset;
+      if (overlapsPark(x0, x1, z0, z1)) continue;
+      const downtown = x0 >= 0;
+      for (const lot of sliceBlock(x0, x1, z0, z1, rng)) {
+        if (downtown) buildTower(city, lot, rng);
+        else buildHouse(city, lot, rng);
+      }
     }
   }
 }
 
-// ---------- Verde Park ----------
+// ---------------------------------------------------------------- greenery
 
-function buildPark(W, rng, city) {
-  const g = new THREE.Group();
-  g.name = 'verde-park';
-  W.scene.add(g);
+function buildPalm(height, rng) {
+  const tree = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.44, height, 6), material(C.trunk));
+  trunk.position.y = height / 2;
+  trunk.castShadow = true;
+  tree.add(trunk);
 
-  const { minX, maxX, minZ, maxZ } = PARK;
-  const cx = (minX + maxX) / 2;
-  const cz = (minZ + maxZ) / 2;
+  for (let i = 0; i < 5; i += 1) {
+    const frond = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.2, 4.2), material(C.frond));
+    const a = (i / 5) * Math.PI * 2 + rng.range(-0.15, 0.15);
+    frond.position.set(Math.sin(a) * 1.8, height + 0.12, Math.cos(a) * 1.8);
+    frond.rotation.set(-0.4, a, 0);
+    frond.castShadow = true;
+    tree.add(frond);
+  }
+  const crown = new THREE.Mesh(new THREE.SphereGeometry(0.5, 6, 5), material(C.frond));
+  crown.position.y = height;
+  tree.add(crown);
+  return tree;
+}
 
-  const lawn = new THREE.Mesh(new THREE.PlaneGeometry(maxX - minX, maxZ - minZ), material(C.grass));
-  lawn.rotation.x = -Math.PI / 2;
-  lawn.position.set(cx, 0.025, cz);
-  lawn.receiveShadow = true;
-  g.add(lawn);
+function buildBench(x, z, yaw) {
+  const bench = new THREE.Group();
+  const wood = material(0x9a7250);
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.18, 0.7), wood);
+  seat.position.y = 0.5;
+  seat.castShadow = true;
+  bench.add(seat);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.7, 0.14), wood);
+  back.position.set(0, 0.92, -0.32);
+  back.castShadow = true;
+  bench.add(back);
+  for (const side of [-1, 1]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.5, 0.6), material(0x5b5b5b));
+    leg.position.set(side * 0.95, 0.25, 0);
+    bench.add(leg);
+  }
+  bench.position.set(x, 0, z);
+  bench.rotation.y = yaw;
+  return bench;
+}
 
-  // Pond against the south edge, ringed with wet sand.
-  const pondX = minX + 18;
-  const pondZ = maxZ - 17;
-  disc(g, 10.8, 0xd8cdb2, pondX, 0.05, pondZ);
-  disc(g, 10, C.water, pondX, 0.07, pondZ, { glassy: true });
+function buildPark(city, rng) {
+  const scene = city.W.scene;
+  const cx = (PARK.minX + PARK.maxX) / 2;
+  const cz = (PARK.minZ + PARK.maxZ) / 2;
+  const w = PARK.maxX - PARK.minX;
+  const d = PARK.maxZ - PARK.minZ;
 
-  for (let i = 0; i < 8; i++) {
-    const px = minX + 10 + (i % 3) * 20 + rng.range(-2, 2);
-    const pz = minZ + 10 + Math.floor(i / 4) * 44 + rng.range(-3, 3);
-    palm(g, px, pz, rng.range(6, 10), rng.range(0.9, 1.15));
+  scene.add(pad(w, d, C.grass, cx, cz, 0.1));
+
+  // One diagonal path so the green reads as a park from the air.
+  const path = new THREE.Mesh(new THREE.PlaneGeometry(w * 1.05, 3.4), material(0xdccfb4));
+  path.rotation.set(-Math.PI / 2, 0, Math.PI / 4);
+  path.position.set(cx, 0.26, cz);
+  path.receiveShadow = true;
+  scene.add(path);
+
+  const pondX = cx + 16;
+  const pondZ = cz + 16;
+  const pond = new THREE.Mesh(new THREE.CircleGeometry(8.5, 20), material(C.water, { glassy: true }));
+  pond.rotation.x = -Math.PI / 2;
+  pond.position.set(pondX, 0.27, pondZ);
+  scene.add(pond);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(8.5, 0.45, 6, 22), material(0xcfc6b8));
+  rim.rotation.x = -Math.PI / 2;
+  rim.position.set(pondX, 0.26, pondZ);
+  scene.add(rim);
+
+  const spots = [
+    [cx - 25, cz - 25], [cx - 11, cz - 28], [cx + 3, cz - 25], [cx + 21, cz - 23],
+    [cx - 26, cz + 19], [cx - 9, cz + 27], [cx + 21, cz + 3], [cx - 20, cz + 4],
+  ];
+  for (const [x, z] of spots) {
+    const tree = buildPalm(rng.range(7, 11), rng);
+    tree.position.set(x, 0.24, z);
+    city.palms.push(tree);
+    scene.add(tree);
   }
 
-  // Benches face the lawn from its north-west side, away from the pond.
-  bench(g, cx - 6, cz - 4, 0);
-  bench(g, cx + 4, cz + 16, Math.PI);
-  bench(g, cx + 14, cz + 6, Math.PI / 2);
+  for (const [x, z, yaw] of [[cx - 4, cz + 6, -0.7], [cx + 6, cz - 5, 2.4], [cx - 15, cz - 5, 0.4]]) {
+    scene.add(buildBench(x, z, yaw));
+  }
 
-  // The crate: one rifle, waiting where the palms shade the north lawn.
-  const crateX = cx - 24;
-  const crateZ = cz - 20;
-  const crate = new THREE.Group();
-  slab(crate, 1.6, 1.1, 1.6, 0x8a6a3f, 0, 0.55, 0);
-  slab(crate, 1.7, 0.16, 1.7, 0x6f5330, 0, 1.12, 0);
-  slab(crate, 0.9, 0.06, 0.9, C.beacon, 0, 1.22, 0);
-  crate.position.set(crateX, 0, crateZ);
-  g.add(crate);
-  addCollider(W, crateX, crateZ, 1.7, 1.7, 1.3);
-
-  city.park = { minX, maxX, minZ, maxZ, x: cx, z: cz };
+  // The crate that holds the rifle.
+  const crateX = cx - 21;
+  const crateZ = cz + 25;
+  scene.add(box(1.8, 1.2, 1.8, 0x8a6a3f, crateX, 0.84, crateZ));
+  scene.add(box(2.0, 0.16, 2.0, C.beacon, crateX, 1.5, crateZ, { flat: true }));
+  addCollider(city.W, crateX, crateZ, 2.0, 2.0, 1.5);
   city.pickup = { x: crateX, z: crateZ, rifle: true };
-}
 
-// ---------- promenade and waterfront ----------
-
-function buildPromenade(W, rng, city) {
-  const g = new THREE.Group();
-  g.name = 'promenade';
-  W.scene.add(g);
-
-  const x = CONFIG.world.sea + 9;
-  for (let i = 0; i < 10; i++) {
-    palm(g, x, -150 + i * 33 + rng.range(-3, 3), rng.range(8, 13), rng.range(1, 1.25));
-  }
-  for (let i = 0; i < 5; i++) {
-    bench(g, x + 6, -120 + i * 60, -Math.PI / 2);
-  }
-  city.promenade = { x, minZ: -165, maxZ: 165 };
-}
-
-/** Posts and rail along the sea wall so the water edge never reads as a seam. */
-function buildSeawall(W) {
-  const rail = new THREE.Group();
-  rail.name = 'seawall';
-  const x = CONFIG.world.sea + 2;
-  for (let i = 0; i < 22; i++) {
-    const post = box(0.3, 1.0, 0.3, 0xf2e6cc);
-    post.position.set(x, 0.5, -154 + i * 14);
-    rail.add(post);
-    const arm = box(0.16, 0.16, 14, 0xe9dcc4);
-    arm.position.set(x, 0.9, -147 + i * 14);
-    rail.add(arm);
-  }
-  W.scene.add(rail);
-}
-
-// ---------- named venues ----------
-
-/** Pool-blue awning and three posts over the garage door. */
-function dressGarage(g, go) {
-  slab(g, go.w, 0.5, 2.2, 0x2f6bff, go.x, 3.6, go.z - go.d / 2 - 1.0);
-  for (let i = 0; i < 3; i++) slab(g, 0.5, 4.4, 0.5, 0x7d8a95, 28 + i * 0.9, 2.2, -48 - i * 0.4);
-}
-
-/** Two shopfront kiosks with their own awnings, inside the mart pad. */
-function dressMart(g) {
-  for (const [x, z] of [[32, 32], [48, 48]]) {
-    slab(g, 16, 2.2, 6, 0xf2e6cc, x, 1.1, z);
-    slab(g, 12, 0.14, 8.4, 0x4f7a5e, x, 2.4, z);
-  }
-}
-
-function buildVenues(W, city) {
-  const g = new THREE.Group();
-  g.name = 'venues';
-  W.scene.add(g);
-
-  // GLASS ORCHID: the garage where Vesper hands out work, north-east block.
-  const go = padBase(g, 40, -40, 26, 12, 0xdfd5c2, 0x2f6bff);
-  dressGarage(g, go);
-
-  // VINE MART: the shop block, south-east of centre.
-  const vm = padBase(g, 40, 40, 34, 10, 0xe8dfcc, 0x4f7a5e);
-  dressMart(g);
-
-  // CEDAR VIEW: hospital pad on the waterfront edge, z ~ 150, white cross on top.
-  const cv = padBase(g, -150, 148, 22, 16, 0xe9f0ec, 0x2f9f7a);
-  slab(g, 6, 6, 6, 0xf4f7f5, -158, 3, 152);
-  slab(g, 3.4, 0.9, 0.7, 0x2f9f7a, -158, 4.4, 148.6);
-  slab(g, 0.9, 3.4, 0.7, 0x2f9f7a, -158, 4.4, 148.6);
-
-  // SABLE ROW: police station pad, x ~ -150, z ~ 100.
-  const sr = padBase(g, -130, 100, 24, 14, 0xd9dde2, 0x2b3b55);
-  slab(g, 4, 3.2, 4, 0xc9ced4, -138, 1.6, 104);
-  slab(g, 2.4, 0.7, 0.5, C.barBlue, -138, 2.6, 101.6);
-
-  // Taxi stand near the centre, on the promenade side of the middle.
-  const ts = padBase(g, -40, 12, 16, 8, 0xf5e6b8, C.taxi);
-  slab(g, 1.2, 3.2, 0.4, C.taxi, -40, 1.6, 16);
-
-  city.markers = {
-    glassOrchid: { x: go.x, z: go.z },
-    vineMart: { x: vm.x, z: vm.z },
-    hospital: { x: cv.x, z: cv.z },
-    station: { x: sr.x, z: sr.z },
-    taxiStand: { x: ts.x, z: ts.z },
+  city.park = {
+    minX: PARK.minX, maxX: PARK.maxX, minZ: PARK.minZ, maxZ: PARK.maxZ,
+    x: cx, z: cz, pond: { x: pondX, z: pondZ, r: 8.5 },
   };
 }
 
-/** A soft gold column over the garage door so the mission giver reads from afar. */
-function buildBeacon(W, city) {
-  const m = city.markers.glassOrchid;
-  const beacon = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.6, 1.6, 26, 12, 1, true),
-    new THREE.MeshBasicMaterial({ color: C.marker, transparent: true, opacity: 0.28, side: THREE.DoubleSide }),
-  );
-  beacon.position.set(m.x, 13, m.z);
-  W.scene.add(beacon);
-  city.beacon = beacon;
+function buildPromenade(city, rng) {
+  for (let i = 0; i < 10; i += 1) {
+    const tree = buildPalm(rng.range(8, 12), rng);
+    tree.position.set(-185 + rng.range(-1.5, 1.5), 0.05, -180 + i * 36);
+    city.palms.push(tree);
+    city.W.scene.add(tree);
+  }
 }
 
-// ---------- spawns ----------
+// ------------------------------------------------------------ named places
+
+// Flat pad plus awning plate and beacon: the street face of a named place.
+function placeSign(city, x, z, hex, w, d, faceZ) {
+  const scene = city.W.scene;
+  scene.add(pad(w, d, 0x2f3742, x, z, 0.1));
+  const awning = new THREE.Mesh(new THREE.BoxGeometry(w * 0.8, 0.5, 1.5), material(hex, { flat: true }));
+  awning.position.set(x, 2.7, z + faceZ * (d / 2 - 0.6));
+  awning.castShadow = true;
+  scene.add(awning);
+  for (const side of [-1, 1]) {
+    scene.add(box(0.28, 2.7, 0.28, 0x3a3f46, x + side * (w * 0.38), 1.35, z + faceZ * (d / 2 - 0.6)));
+  }
+  scene.add(box(0.24, 3.6, 0.24, 0x5b6472, x, 1.8, z - faceZ * (d / 2 - 0.5)));
+  const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.6, 1.0), material(hex, { flat: true }));
+  lamp.position.set(x, 3.85, z - faceZ * (d / 2 - 0.5));
+  scene.add(lamp);
+}
+
+function buildPlaces(city) {
+  const scene = city.W.scene;
+
+  // GLASS ORCHID — the giver's lockup in Meridian's north-west block.
+  const go = { x: MID + 20, z: -MID - 20 };
+  scene.add(pad(30, 22, 0x8c929a, go.x, go.z, 0.11));
+  scene.add(box(26, 7, 4, C.glass[1], go.x, 3.5, go.z - 9, { glassy: true }));
+  addCollider(city.W, go.x, go.z - 9, 26, 4, 7);
+  city.buildings.push({ x: go.x, z: go.z - 9, w: 26, d: 4, h: 7, color: C.glass[1] });
+  placeSign(city, go.x, go.z + 6, C.barRed, 14, 8, 1);
+  city.markers.glassOrchid = { x: go.x, z: go.z };
+
+  // VINE MART — corner shop south of the avenue.
+  const vm = { x: MID + 20, z: MID + 22 };
+  scene.add(pad(22, 16, 0x8c929a, vm.x, vm.z, 0.11));
+  scene.add(box(18, 5.2, 10, C.stucco[1], vm.x, 2.6, vm.z - 11));
+  addCollider(city.W, vm.x, vm.z - 11, 18, 10, 5.2);
+  city.buildings.push({ x: vm.x, z: vm.z - 11, w: 18, d: 10, h: 5.2, color: C.stucco[1] });
+  placeSign(city, vm.x, vm.z + 2, C.stucco[3], 12, 8, 1);
+  city.markers.vineMart = { x: vm.x, z: vm.z };
+
+  // CEDAR VIEW — hospital on the west edge by the promenade.
+  const cv = { x: -160, z: 150 };
+  scene.add(pad(24, 26, 0xe8e4dc, cv.x, cv.z, 0.11));
+  scene.add(box(16, 12, 16, 0xf3efe6, cv.x - 4, 6, cv.z));
+  addCollider(city.W, cv.x - 4, cv.z, 16, 16, 12);
+  city.buildings.push({ x: cv.x - 4, z: cv.z, w: 16, d: 16, h: 12, color: 0xf3efe6 });
+  placeSign(city, cv.x + 4, cv.z, 0xdfe9f2, 10, 14, 1);
+  city.markers.hospital = { x: cv.x + 4, z: cv.z };
+
+  // SABLE ROW — police station, Palm Ward.
+  const sr = { x: -150, z: 100 };
+  scene.add(pad(26, 24, 0xa8b2bc, sr.x, sr.z, 0.11));
+  scene.add(box(20, 9, 12, C.coptrim, sr.x, 4.5, sr.z - 11));
+  addCollider(city.W, sr.x, sr.z - 11, 20, 12, 9);
+  city.buildings.push({ x: sr.x, z: sr.z - 11, w: 20, d: 12, h: 9, color: C.coptrim });
+  placeSign(city, sr.x, sr.z - 1, C.barBlue, 16, 10, -1);
+  city.markers.station = { x: sr.x, z: sr.z };
+
+  // TAXI STAND — where the cabs idle near the central crossing.
+  const ts = { x: 26, z: -16 };
+  scene.add(pad(16, 8, 0x3b4147, ts.x, ts.z, 0.08));
+  scene.add(box(0.3, 3.2, 0.3, 0x5b6472, ts.x - 7, 1.7, ts.z - 3.2));
+  scene.add(box(3.4, 1.0, 0.3, C.taxi, ts.x - 5.4, 3.4, ts.z - 3.2, { flat: true }));
+  city.markers.taxiStand = { x: ts.x, z: ts.z };
+}
+
+// ----------------------------------------------------------------- spawns
 
 function buildSpawns(city) {
-  city.spawns = {
-    playerStart: { x: -18, z: 20 },
-    carParks: [
-      { x: 30, z: -22, heading: 0, kind: 'sport', color: C.sport, mission1: true, label: 'm1car' },
-      { x: 52, z: -18, heading: 0, kind: 'sport', color: 0x2f6bff },
-      { x: 88, z: 30, heading: Math.PI / 2, kind: 'sedan', color: C.sedan },
-      { x: -40, z: 96, heading: -Math.PI / 2, kind: 'sedan', color: 0xd7d0c2 },
-      { x: -44, z: 20, heading: Math.PI / 2, kind: 'taxi', color: C.taxi },
-      { x: 8, z: -118, heading: Math.PI, kind: 'sport', color: C.sport },
-    ],
-  };
+  city.spawns.playerStart = { x: 14, z: 20 };
+  city.spawns.carParks = [
+    { x: 26, z: 14, kind: 'sport', color: C.sport, tag: 'm1car' },
+    { x: -18, z: 46, kind: 'sedan', color: C.sedan },
+    { x: 62, z: -20, kind: 'sedan', color: 0xd9d2c4 },
+    { x: 34, z: -18, kind: 'taxi', color: C.taxi },
+    { x: -34, z: -26, kind: 'sport', color: 0x4fa0d9 },
+    { x: -62, z: 64, kind: 'sport', color: 0xe0c14f },
+  ];
 }
 
-/** Positions are authored on an 80 m grid; scale them once to whatever pitch is live. */
-function snapToGrid(city) {
-  const k = CONFIG.world.pitch / 80;
-  const lift = (p) => {
-    p.x = Math.round(p.x * k);
-    p.z = Math.round(p.z * k);
-  };
-  for (const key of Object.keys(city.markers)) lift(city.markers[key]);
-  lift(city.spawns.playerStart);
-  for (const spot of city.spawns.carParks) lift(spot);
-}
-
-// ---------- export ----------
-
-/** Build every static piece of Solara Bay and return the city handle. */
 export function buildCity(W, rng) {
   const city = {
+    W,
     buildings: [],
-    park: null,
+    palms: [],
     markers: {},
-    spawns: null,
+    spawns: {},
+    park: null,
     pickup: null,
-    lots: {},
   };
 
-  buildBlocks(W, rng, city);
-  buildPark(W, rng, city);
-  buildPromenade(W, rng, city);
-  buildVenues(W, city);
+  fillBlocks(city, rng);
+  buildPark(city, rng);
+  buildPromenade(city, rng);
+  buildPlaces(city);
   buildSpawns(city);
-  snapToGrid(city);
-  buildSeawall(W);
-  buildBeacon(W, city);
 
   return city;
 }
 
-/** Which building, if any, hides this point. Cover checks and minimap hits use it. */
+// Which building footprint contains this point? Buildings are sorted into a
+// coarse bucket grid the first time it is asked, then the check is O(1).
 export function buildingAt(city, x, z) {
   const list = city.buildings;
-  for (let i = 0; i < list.length; i++) {
-    const b = list[i];
-    if (Math.abs(x - b.x) <= b.w / 2 && Math.abs(z - b.z) <= b.d / 2) return b;
+  if (!city.buildingIndex) {
+    const index = new Map();
+    for (const b of list) {
+      for (let ix = Math.floor((b.x - b.w / 2) / 40); ix <= Math.floor((b.x + b.w / 2) / 40); ix += 1) {
+        for (let iz = Math.floor((b.z - b.d / 2) / 40); iz <= Math.floor((b.z + b.d / 2) / 40); iz += 1) {
+          const key = `${ix},${iz}`;
+          if (!index.has(key)) index.set(key, []);
+          index.get(key).push(b);
+        }
+      }
+    }
+    city.buildingIndex = index;
+  }
+
+  const bucket = city.buildingIndex.get(`${Math.floor(x / 40)},${Math.floor(z / 40)}`);
+  if (!bucket) return null;
+  for (const b of bucket) {
+    if (x >= b.x - b.w / 2 && x <= b.x + b.w / 2 && z >= b.z - b.d / 2 && z <= b.z + b.d / 2) return b;
   }
   return null;
 }

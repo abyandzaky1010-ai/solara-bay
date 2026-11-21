@@ -4,11 +4,9 @@
 
 # SOLARA BAY
 
-*Sun, chrome, and one last job.*
-
-Solara Bay is an open-world crime sandbox that runs in a browser tab. You drive a 400 x 400 m coastal city on foot or behind the wheel of a stolen car, while traffic, pedestrians and the police keep the streets alive.
-
-It is a single HTML page plus ES modules, rendered with Three.js (vendored at `game/vendor/three/three.module.min.js`). Everything is a static file: no build step, no backend, no network requests at runtime, no audio files.
+An open-world crime sandbox that runs in the browser. One HTML page plus ES
+modules on top of Three.js (vendored in `game/vendor/`). The whole game is
+static files: no build step, no backend, no network requests at runtime.
 
 ## Run it
 
@@ -16,61 +14,55 @@ It is a single HTML page plus ES modules, rendered with Three.js (vendored at `g
 node serve.ts
 ```
 
-Then open <http://localhost:8080>.
+then open http://localhost:8080.
 
 ## Controls
 
-| Key / input | Action |
+| Input | Action |
 | --- | --- |
-| `W` `A` `S` `D` | Move on foot / drive |
-| Mouse | Look (click the canvas to capture the pointer) |
-| `Shift` | Sprint on foot |
-| `E` | Enter, steal or leave a car |
-| `F` | Fire the equipped weapon |
-| `T` | Toggle taxi fares (while driving a taxi) |
-| `R` | Restart a failed mission |
-| `Escape` | Pause |
+| W A S D | Move / drive |
+| Mouse | Look |
+| Shift | Sprint |
+| E | Enter, steal or leave a car |
+| F | Fire weapon |
+| T | Toggle taxi fares (while in a taxi) |
+| Escape | Pause |
 
 ## Systems
 
-- **City** — two districts. Meridian (downtown glass and steel towers) east of the main avenue, Palm Ward (low-rise pastel stucco) west of it. Verde Park in the south-west blocks, an ocean waterfront with a palm promenade on the west edge, and a 12 m street grid with sidewalks and crosswalks.
-- **Traffic** — 11 ambient cars loop the grid in the right-hand lane, keep their distance, honk and give way.
-- **Pedestrians** — 15 walkers circle blocks on sidewalks, cross at corners, flee gunfire and speeding cars, and go down when hit.
-- **Wanted level** — 1 to 5 stars. Crimes (car theft, shooting, killing pedestrians or officers) raise it; staying out of sight bleeds it down one star at a time. Police respond with patrol cars that chase and ram, foot officers that fire, and roadblocks at four stars and above.
-- **Story** — three missions from the Glass Orchid garage: steal the Coral coupe, shake the police within 90 seconds, then run a timed harbour handoff with heat on your tail.
-- **Combat** — a pistol from the start, a rifle picked up from the crate in Verde Park, plus armour and medkits from the Vine Mart shop.
-- **Money** — rewards, shop prices, hospital and station fees, and taxi fares between 80 and 150 dollars.
-- **Taxi work** — drive a taxi, press `T`, pick up a waiting fare and drop them at the marker.
-- **HUD** — wanted stars, money, health and armour bars, weapon and ammo, speedometer, mission objective with timer, toasts, and a canvas minimap with roads, buildings, park, blips and markers.
-- **Save** — money, mission progress, rifle, ammo and armour are written to `localStorage` (`solara-bay-save-v1`) every ten seconds and on milestones.
+- **City** — 400 x 400 m, one late-morning look (day only). Five roads on each
+  axis form the grid. `MERIDIAN` downtown in the east holds glass and steel
+  towers; `PALM WARD` in the west is low-rise pastel stucco. Verde Park sits
+  mid-city with a pond, palms and benches. An ocean and a palm promenade run
+  along the west edge.
+- **Traffic** — 11 ambient cars (sedans and taxis) follow the road grid in the
+  right-hand lane, stop for obstacles and honk on contact.
+- **Pedestrians** — 15 walkers patrol the block corners, sprint away from
+  gunfire and go down when a car hits them.
+- **Wanted** — 1 to 5 stars for theft, hits, shots and kills; police cars and
+  foot officers respond in growing numbers, chase, ram and open fire. Stars
+  decay when nobody has eyes on you. Getting arrested at low health ends in a
+  busted screen; dying ends in a wasted screen.
+- **Missions** — a three-mission story around the Glass Orchid garage:
+  steal and deliver a coupe, shake a two-star chase inside 90 seconds, then
+  run a timed harbor handoff. Rewards are $500, $800 and $1500.
+- **Combat** — pistol by default, a rifle pickup waits in a crate in Verde
+  Park, and a rifle plus ammo, armor and medkits are sold at the VINE MART shop.
+- **Economy** — money HUD, shop, mission pay and taxi fares ($80-$150).
+- **HUD** — money, wanted stars, health and armor bars, weapon and ammo,
+  speedometer, objective line with distance and timer, toasts, and a canvas
+  minimap that shows roads, blocks, the park, cars, peds, police blips and
+  mission markers.
+- **Save** — money, mission progress, rifle, ammo and armor are kept in
+  localStorage and restored on Continue.
 
 ## Layout
 
 ```
-game/index.html        HUD DOM, CSS, import map
-game/src/config.js     every tunable number
-game/src/palette.js    colours and shared materials
-game/src/random.js     seeded RNG helpers
-game/src/input.js      keyboard, mouse, pointer lock
-game/src/world.js      renderer, scene, lights, camera, roads, collisions
-game/src/city.js       buildings, districts, park, waterfront, props, spawns
-game/src/player.js     character, on-foot control, weapons
-game/src/car.js        vehicles, driving, damage
-game/src/traffic.js    ambient traffic
-game/src/peds.js       pedestrians
-game/src/police.js     wanted level and police AI
-game/src/missions.js   story missions and markers
-game/src/economy.js    money, shop, fares, save
-game/src/hud.js        HUD, minimap, panels
-game/src/sfx.js        WebAudio blips
-game/src/render.js     pooled visual effects
-game/src/shots.js      deterministic screenshot scenes
-main.ts                dossier builder (Node 22, stdlib only)
-serve.ts               static dev server on port 8080
+main.ts      staging + dossier.json for the make.fun hand-in
+serve.ts     local static server on :8080
+shots.json   the four screenshot scenes (?shot=chase|city|mission|start)
+game/        index.html, src/*.js, vendor/three/
 ```
 
-Screenshot scenes for the submission are addressed by URL, for example `http://localhost:8080/?shot=chase&seed=1`.
-
-## Licence
-
-MIT — see `LICENSE`.
+MIT licensed — see `LICENSE`.

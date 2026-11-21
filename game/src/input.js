@@ -1,110 +1,96 @@
-// Keyboard, mouse and pointer lock. Nothing here knows about the 3D world.
+// Input plumbing. Holds keyboard state with once-pressed edges, accumulates
+// mouse motion while pointer lock is held, and resets per-frame deltas at the
+// end of each frame. Nothing here knows about Three.js.
 
 const GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyF', 'KeyT', 'KeyR',
-  'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'ShiftLeft', 'ShiftRight', 'Space', 'Escape', 'ArrowUp', 'ArrowDown',
+  'ArrowLeft', 'ArrowRight',
 ]);
 
 export function createInput(canvas) {
   const keys = new Set();
   const pressed = new Set();
-  let dx = 0;
-  let dy = 0;
-  let wheel = 0;
-  let locked = false;
-
-  const onKeyDown = (ev) => {
-    if (ev.repeat) return;
-    keys.add(ev.code);
-    pressed.add(ev.code);
-    if (GAME_KEYS.has(ev.code)) ev.preventDefault();
-  };
-
-  const onKeyUp = (ev) => {
-    keys.delete(ev.code);
-    if (GAME_KEYS.has(ev.code)) ev.preventDefault();
-  };
-
-  const onMouseMove = (ev) => {
-    if (!locked) return;
-    dx += ev.movementX || 0;
-    dy += ev.movementY || 0;
-  };
-
-  const onWheel = (ev) => {
-    wheel += ev.deltaY;
-  };
-
-  const onLockChange = () => {
-    locked = document.pointerLockElement === canvas;
-    if (!locked) {
-      keys.clear();
-      dx = 0;
-      dy = 0;
-    }
-  };
-
-  const onBlur = () => {
-    keys.clear();
-  };
-
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
-  window.addEventListener('blur', onBlur);
-  window.addEventListener('mousemove', onMouseMove);
-  window.addEventListener('wheel', onWheel, { passive: true });
-  document.addEventListener('pointerlockchange', onLockChange);
-  canvas.addEventListener('contextmenu', (ev) => ev.preventDefault());
+  const mouseState = { dx: 0, dy: 0, wheel: 0 };
 
   const I = {
     keys,
-
-    down: (code) => keys.has(code),
-
-    /** True once per physical press; reading it consumes the press. */
+    locked: false,
+    down(code) {
+      return keys.has(code);
+    },
     wasPressed(code) {
       if (!pressed.has(code)) return false;
       pressed.delete(code);
       return true;
     },
-
-    mouse: () => ({ dx, dy, wheel }),
-
+    mouse() {
+      return mouseState;
+    },
     lock() {
-      if (!locked && canvas.requestPointerLock) canvas.requestPointerLock();
+      if (canvas && canvas.requestPointerLock) {
+        try {
+          canvas.requestPointerLock();
+        } catch {
+          /* pointer lock can be refused right after exit; harmless */
+        }
+      }
     },
-
-    unlock() {
-      if (document.exitPointerLock) document.exitPointerLock();
-    },
-
-    get locked() {
-      return locked;
-    },
-
-    /** Drop per-frame deltas and any presses nobody consumed. */
     endFrame() {
-      dx = 0;
-      dy = 0;
-      wheel = 0;
+      mouseState.dx = 0;
+      mouseState.dy = 0;
+      mouseState.wheel = 0;
       pressed.clear();
     },
-
-    /** Movement axes already normalised for diagonal walking. */
-    axis() {
-      let x = 0;
-      let y = 0;
-      if (I.down('KeyW') || I.down('ArrowUp')) y += 1;
-      if (I.down('KeyS') || I.down('ArrowDown')) y -= 1;
-      if (I.down('KeyD') || I.down('ArrowRight')) x += 1;
-      if (I.down('KeyA') || I.down('ArrowLeft')) x -= 1;
-      const len = Math.hypot(x, y);
-      if (len > 1) { x /= len; y /= len; }
-      return { x, y };
+    silence(code) {
+      pressed.delete(code);
     },
-
-    sprinting: () => keys.has('ShiftLeft') || keys.has('ShiftRight'),
   };
+
+  window.addEventListener('keydown', (e) => {
+    if (GAME_KEYS.has(e.code)) e.preventDefault();
+    if (e.repeat) return;
+    if (!keys.has(e.code)) pressed.add(e.code);
+    keys.add(e.code);
+  });
+
+  window.addEventListener('keyup', (e) => {
+    keys.delete(e.code);
+  });
+
+  window.addEventListener('blur', () => {
+    keys.clear();
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!I.locked) return;
+    mouseState.dx += e.movementX || 0;
+    mouseState.dy += e.movementY || 0;
+  });
+
+  window.addEventListener(
+    'wheel',
+    (e) => {
+      if (!I.locked) return;
+      e.preventDefault();
+      mouseState.wheel += Math.sign(e.deltaY);
+    },
+    { passive: false },
+  );
+
+  document.addEventListener('pointerlockchange', () => {
+    I.locked = document.pointerLockElement === canvas;
+  });
+
+  window.addEventListener('mousedown', (e) => {
+    if (!I.locked) return;
+    if (e.button === 0) pressed.add('Fire');
+    if (e.button === 2) pressed.add('Aim');
+  });
+
+  window.addEventListener('contextmenu', (e) => {
+    if (I.locked) e.preventDefault();
+  });
 
   return I;
 }

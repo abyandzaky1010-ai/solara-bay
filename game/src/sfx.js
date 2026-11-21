@@ -1,254 +1,212 @@
-// One job: noise. Everything is synthesised with WebAudio on the spot, so the
-// game ships no audio files and makes no requests. With no AudioContext (or no
-// gesture yet) every call is a silent no-op.
-import { CONFIG } from './config.js';
+// WebAudio synthesis only: no files, no network, nothing to load.
+// The context opens on the first gesture; every call checks it first, so a
+// silent browser plays a silent game instead of throwing.
 
-const MASTER = 0.25;
-const SHOT_HZ = 900;
-const SIREN_A = 659;
-const SIREN_B = 494;
-const SIREN_SWAP = 0.45;
-const ENGINE_MIN = 50;
-const ENGINE_MAX = 120;
-const VIBRATO = 2.4;
-const ENGINE_CUT = [['sport', 900], ['police', 800]];
-const WIN_NOTES = [523, 659, 784];
-const LOSS_NOTES = [523, 415, 330];
+let ctx = null, master = null, noiseBuf = null, engine = null, sirenVoice = null;
+const CYCLE = 0.45;   // siren half period
 
-let ctx = null;
-let master = null;
-let noiseBuf = null;
-let engine = null;
-let sirenVoice = null;
+function open() {
+  if (ctx) return ctx;
+  const AC = typeof window !== 'undefined' ? (window.AudioContext || window.webkitAudioContext) : null;
+  if (!AC) return null;
+  try {
+    ctx = new AC();
+    master = ctx.createGain();
+    master.gain.value = 0.25;
+    master.connect(ctx.destination);
+  } catch (err) {
+    ctx = master = null;
+  }
+  return ctx;
+}
 
-/** Call from the first click: browsers start audio suspended until a gesture. */
+/** Arm audio: first click or key opens the context. No music, ever. */
 export function initSfx() {
-  try {
-    if (!ctx) {
-      const Ctor = window.AudioContext || window.webkitAudioContext;
-      if (!Ctor) return false;
-      ctx = new Ctor();
-      master = ctx.createGain();
-      master.gain.value = MASTER;
-      master.connect(ctx.destination);
-      // One second of white noise, reused by every percussive sound.
-      const len = Math.floor(ctx.sampleRate);
-      noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
-      const data = noiseBuf.getChannelData(0);
-      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  if (typeof window === 'undefined') return null;
+  const wake = () => {
+    const live = open();
+    if (live && live.state === 'suspended') live.resume().catch(() => {});
+    window.removeEventListener('pointerdown', wake);
+    window.removeEventListener('keydown', wake);
+  };
+  window.addEventListener('pointerdown', wake);
+  window.addEventListener('keydown', wake);
+  return master;
+}
+
+// One plucked oscillator; optional glide.
+function tone(hz, dur, type, gain, slide, delay) {
+  if (!ctx) return;
+  const t0 = ctx.currentTime + (delay || 0), osc = ctx.createOscillator(), amp = ctx.createGain();
+  osc.type = type || 'sine';
+  osc.frequency.setValueAtTime(hz, t0);
+  if (slide) osc.frequency.exponentialRampToValueAtTime(slide, t0 + dur);
+  amp.gain.setValueAtTime(0.0001, t0);
+  amp.gain.exponentialRampToValueAtTime(gain, t0 + 0.015);
+  amp.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(amp).connect(master);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.02);
+}
+
+// Filtered noise burst: the body of shots, crashes and fires.
+function burst(dur, freq, gain, type) {
+  if (!ctx) return;
+  if (!noiseBuf) {
+    noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i += 1) d[i] = Math.random() * 2 - 1;
+  }
+  const t0 = ctx.currentTime, src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), amp = ctx.createGain();
+  src.buffer = noiseBuf;
+  f.type = type || 'lowpass';
+  f.frequency.setValueAtTime(freq, t0);
+  amp.gain.setValueAtTime(gain, t0);
+  amp.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  src.connect(f).connect(amp).connect(master);
+  src.start(t0);
+  src.stop(t0 + dur + 0.02);
+}
+
+const RAW = {
+  // gunshot: noise crack under a 900 Hz blip
+  shot(rifle) {
+    burst(rifle ? 0.11 : 0.08, rifle ? 2600 : 1800, rifle ? 0.45 : 0.32);
+    tone(rifle ? 700 : 900, 0.06, 'square', 0.12, 220);
+  },
+  // two bells for cash and pickups
+  chime() {
+    tone(660, 0.12, 'sine', 0.3);
+    tone(880, 0.16, 'sine', 0.26, 0, 0.09);
+  },
+  // 60 Hz swell under a long noise decay
+  explode() {
+    tone(60, 0.6, 'sine', 0.55, 28);
+    burst(0.6, 900, 0.5);
+    burst(0.35, 3200, 0.22, 'highpass');
+  },
+  // metal thud, brighter with force
+  crash(force) {
+    const f = Math.max(0.2, Math.min(1, Number(force) || 0.6));
+    burst(0.12 + 0.1 * f, 500 + 700 * f, 0.28 * f + 0.08);
+    tone(90 + 40 * f, 0.1, 'triangle', 0.12);
+  },
+  honk() {
+    tone(440, 0.2, 'square', 0.14);
+    tone(554, 0.2, 'square', 0.09);
+  },
+  // story sting: up for a win, down for a loss
+  jingle(win) {
+    (win ? [523, 659, 784] : [392, 330, 262]).forEach((hz, i) => tone(hz, 0.18, 'triangle', 0.24, 0, i * 0.11));
+    if (win) tone(1568, 0.3, 'sine', 0.14, 0, 0.22);
+  },
+  dry() { burst(0.03, 2400, 0.16, 'highpass'); },
+  door() {
+    burst(0.09, 420, 0.22);
+    tone(120, 0.07, 'triangle', 0.1);
+  },
+  // two-tone wail while wanted
+  siren(on) {
+    const v = sirenVoice;
+    sirenVoice = null;
+    if (!on) {
+      if (!v || !ctx) return;
+      const t = ctx.currentTime;
+      v.gain.gain.cancelScheduledValues(t);
+      v.gain.gain.setValueAtTime(Math.max(0.0001, v.gain.gain.value), t);
+      v.gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+      v.osc.stop(t + 0.18);
+      return;
     }
-    if (ctx.state === 'suspended') ctx.resume();
-    return true;
-  } catch (err) {
-    ctx = null;
-    return false;
-  }
-}
+    if (v) {
+      sirenVoice = v;
+      return;
+    }
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = 659;
+    gain.gain.value = 0.0001;
+    osc.connect(gain).connect(master);
+    gain.gain.linearRampToValueAtTime(0.07, ctx.currentTime + 0.15);
+    osc.start();
+    sirenVoice = { osc, gain, phase: 0 };
+  },
+  // a wounded engine coughing under the loop
+  engineSputter() {
+    if (!ctx || !engine) return;
+    const g = engine.gain.gain, t = ctx.currentTime;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(engine.level, t);
+    g.linearRampToValueAtTime(0.02, t + 0.05);
+    g.linearRampToValueAtTime(engine.level, t + 0.12);
+  },
+};
 
-/** One enveloped oscillator: peaks quickly, decays, never throws. */
-function tone(freq, dur, type, peak, at) {
-  if (!initSfx()) return;
+/** Every effect, each call guarded: audio never breaks the game. */
+const S = Object.fromEntries(Object.entries(RAW).map(([k, fn]) => [k, (...a) => {
   try {
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    const t = ctx.currentTime + (at || 0);
-    o.type = type || 'sine';
-    o.frequency.setValueAtTime(Math.max(20, freq), t);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(Math.max(0.002, peak), t + Math.min(0.02, dur * 0.3));
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g);
-    g.connect(master);
-    o.start(t);
-    o.stop(t + dur + 0.02);
-  } catch (err) {
-    /* audio is decoration */
-  }
-}
+    if (ctx || open()) fn(...a);
+  } catch (err) { /* silence */ }
+}]));
 
-/** A burst of filtered noise: the crack, the thud, the roar. */
-function noiseBurst(dur, peak, filterHz, type) {
-  if (!initSfx() || !noiseBuf) return;
-  try {
-    const src = ctx.createBufferSource();
-    src.buffer = noiseBuf;
-    const filter = ctx.createBiquadFilter();
-    filter.type = type;
-    filter.frequency.value = filterHz;
-    const g = ctx.createGain();
-    const t = ctx.currentTime;
-    g.gain.setValueAtTime(Math.max(0.002, peak), t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(filter);
-    filter.connect(g);
-    g.connect(master);
-    src.start(t, Math.random() * 0.4);
-    src.stop(t + dur + 0.02);
-  } catch (err) {
-    /* ignore */
-  }
-}
-
-/** Fade a live voice out and stop it, so it never clicks. */
-function release(voice, fall) {
-  if (!voice || !ctx) return;
-  try {
-    const t = ctx.currentTime;
-    voice.gain.gain.cancelScheduledValues(t);
-    voice.gain.gain.setValueAtTime(Math.max(0.0002, voice.gain.gain.value), t);
-    voice.gain.gain.exponentialRampToValueAtTime(0.0001, t + fall);
-    voice.osc.stop(t + fall + 0.04);
-  } catch (err) {
-    /* ignore */
-  }
-}
-
-// ---------- one-shots ----------
-
-/** Pistol or rifle: a short crack with a mid-frequency body under it. */
-export function shot(rifle) {
-  const heavy = !!rifle;
-  noiseBurst(heavy ? 0.07 : 0.09, heavy ? 0.5 : 0.42, heavy ? 880 : SHOT_HZ, 'bandpass');
-  tone(heavy ? 620 : SHOT_HZ, 0.05, 'square', 0.12);
-}
-
-/** Shop bell: two bright sines. */
-export function chime() {
-  tone(660, 0.16, 'sine', 0.22);
-  tone(880, 0.22, 'sine', 0.18);
-}
-
-/** A car going up: a low swell under a long noise decay. */
-export function explode() {
-  tone(60, 0.48, 'sine', 0.5);
-  noiseBurst(0.6, 0.55, 480, 'lowpass');
-  noiseBurst(0.24, 0.3, 2400, 'highpass');
-}
-
-/** Sheet metal: a short dull thud with a rattle on top. */
-export function crash(force) {
-  const f = Math.max(0.25, Math.min(1, typeof force === 'number' ? force : 0.6));
-  noiseBurst(0.18, 0.4 * f, 260, 'lowpass');
-  noiseBurst(0.108, 0.22 * f, 1800, 'bandpass');
-}
-
-/** Taxi horn: a 440 Hz square held flat. */
-export function honk() {
-  tone(440, 0.2, 'square', 0.14);
-}
-
-/** Payday or failure: three notes up for a win, down for a loss. */
-export function jingle(win) {
-  const notes = win ? WIN_NOTES : LOSS_NOTES;
-  for (let i = 0; i < notes.length; i++) tone(notes[i], 0.24, 'triangle', 0.22, i * 0.11);
-}
-
-// ---------- engine ----------
-
-/** Start (or restyle) the engine: one sawtooth through a lowpass. */
-export function engineOn(kind) {
-  if (!initSfx()) return;
+/** Start the car voice: a sawtooth through a lowpass, quiet by default. */
+export function engineOn() {
   engineOff();
-  try {
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    const filter = ctx.createBiquadFilter();
-    const named = ENGINE_CUT.find((pair) => pair[0] === kind);
-    o.type = 'sawtooth';
-    o.frequency.value = ENGINE_MIN;
-    filter.type = 'lowpass';
-    filter.frequency.value = named ? named[1] : 620;
-    g.gain.value = 0.0001;
-    o.connect(filter);
-    filter.connect(g);
-    g.connect(master);
-    o.start();
-    g.gain.exponentialRampToValueAtTime(0.1, ctx.currentTime + 0.25);
-    engine = { osc: o, gain: g, filter, t: 0 };
-  } catch (err) {
-    engine = null;
-  }
+  if (!ctx && !open()) return;
+  const osc = ctx.createOscillator(), filter = ctx.createBiquadFilter(), gain = ctx.createGain();
+  const lfo = ctx.createOscillator(), wobble = ctx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.value = 55;
+  filter.type = 'lowpass';
+  filter.frequency.value = 380;
+  filter.Q.value = 2.2;
+  gain.gain.value = 0.0001;
+  lfo.frequency.value = 18;
+  wobble.gain.value = 1.6;
+  lfo.connect(wobble).connect(osc.frequency);
+  osc.connect(filter).connect(gain).connect(master);
+  gain.gain.linearRampToValueAtTime(0.09, ctx.currentTime + 0.18);
+  osc.start();
+  lfo.start();
+  engine = { osc, filter, gain, lfo, level: 0.09 };
 }
 
-/** Follow the throttle (0..1) with pitch, filter and a little vibrato. */
-export function engineUpdate(speed01, dt) {
-  if (!engine || !ctx) return;
-  try {
-    const v = Math.max(0, Math.min(1, speed01 || 0));
-    engine.t += dt || 0;
-    const wobble = Math.sin(engine.t * Math.PI * 2 * VIBRATO) * (1.5 + v * 2.5);
-    const t = ctx.currentTime;
-    engine.osc.frequency.setTargetAtTime(ENGINE_MIN + (ENGINE_MAX - ENGINE_MIN) * v + wobble, t, 0.08);
-    engine.filter.frequency.setTargetAtTime(520 + v * 900, t, 0.1);
-    engine.gain.gain.setTargetAtTime(0.05 + v * 0.07, t, 0.15);
-  } catch (err) {
-    /* ignore */
-  }
+/** Tacho: 50 Hz at rest, 120 Hz flat out; brighter with speed. */
+export function engineUpdate(speed01) {
+  if (!engine) return;
+  const s = Math.max(0, Math.min(1, Number(speed01) || 0)), t = ctx.currentTime;
+  engine.osc.frequency.setTargetAtTime(50 + 70 * s, t, 0.08);
+  engine.filter.frequency.setTargetAtTime(320 + 900 * s, t, 0.1);
 }
 
-/** Kill the engine voice with a quick fade. */
 export function engineOff() {
   const e = engine;
   engine = null;
-  release(e, 0.18);
+  if (!e || !ctx) return;
+  const t = ctx.currentTime;
+  e.gain.gain.cancelScheduledValues(t);
+  e.gain.gain.setValueAtTime(Math.max(0.0001, e.gain.gain.value), t);
+  e.gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+  e.osc.stop(t + 0.2);
+  e.lfo.stop(t + 0.2);
 }
 
-// ---------- siren ----------
-
-/** Two-tone wail on a single square wave; sirenTick does the swapping. */
-export function siren(on) {
-  if (!on) {
-    const v = sirenVoice;
-    sirenVoice = null;
-    release(v, 0.2);
-    return;
-  }
-  if (sirenVoice || !initSfx()) return;
-  try {
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = 'square';
-    o.frequency.value = SIREN_A;
-    g.gain.value = 0.055;
-    o.connect(g);
-    g.connect(master);
-    o.start();
-    sirenVoice = { osc: o, gain: g, t: 0, high: true };
-  } catch (err) {
-    sirenVoice = null;
-  }
-}
-
-/** Called each frame: alternate the wail every 0.45 s while it is live. */
-export function sirenTick(dt) {
-  const v = sirenVoice;
-  if (!v || !ctx) return;
-  v.t += dt || 0;
-  if (v.t < SIREN_SWAP) return;
-  v.t = 0;
-  v.high = !v.high;
-  try {
-    v.osc.frequency.setValueAtTime(v.high ? SIREN_A : SIREN_B, ctx.currentTime);
-  } catch (err) {
-    /* ignore */
-  }
-}
-
-/** The bag of sounds the rest of the game calls through G.sound. */
-export const S = {
-  shot: (rifle) => shot(rifle),
-  chime: () => chime(),
-  explode: () => explode(),
-  crash: (force) => crash(force),
-  honk: () => honk(),
-  jingle: (win) => jingle(win),
-  siren: (on) => siren(on),
-  dry: () => tone(180, 0.04, 'square', 0.06),
-};
-
-/** Convenience for main: engine pitch straight from a car's speed. */
-export function engineFromSpeed(car, dt) {
+/** Convenience for the loop: feed the driven car straight in. */
+export function engineFromSpeed(car) {
   if (!car) return;
-  const spec = CONFIG.car.kinds[car.kind] || CONFIG.car.kinds.sedan;
-  engineUpdate(Math.min(1, Math.abs(car.speed || 0) / spec.max), dt);
+  engineUpdate(Math.min(1, Math.abs(car.speed || 0) / (car.kind === 'sport' || car.kind === 'police' ? 28 : 22)));
+  if (car.kind === 'police') S.siren(car.sirenOn !== false);
 }
+
+/** Alternate 659 / 494 Hz every half second; called once per frame. */
+export function sirenTick(dt) {
+  if (!sirenVoice) return;
+  sirenVoice.phase += Number(dt) || 0;
+  if (sirenVoice.phase >= CYCLE) {
+    sirenVoice.phase -= CYCLE;
+    const osc = sirenVoice.osc;
+    osc.frequency.setTargetAtTime(osc.frequency.value > 550 ? 494 : 659, ctx.currentTime, 0.02);
+  }
+}
+
+export { S };

@@ -1,182 +1,83 @@
-import {makeRng} from './random.js';
-import {CONFIG} from './config.js';
-import {C} from './palette.js';
-import {makeCar,syncCarMesh} from './car.js';
-import {addStars} from './police.js';
-import {startMission} from './missions.js';
-import {makeFarePed} from './peds.js';
-import {showPanel,hidePanels} from './hud.js';
-import {spawnTracer,spawnMuzzle} from './render.js';
+import * as THREE from 'three';
+import { makeRng } from './random.js';
+import { makeCar } from './car.js';
+import { makeFarePed } from './peds.js';
+import { C } from './palette.js';
+import { showPanel, hidePanels } from './hud.js';
+import { spawnTracer } from './render.js';
 
-const rng=makeRng(1);
-const PI=Math.PI;
+const drop = (l) => { for (const o of l) if (o && o.mesh && o.mesh.parent) o.mesh.parent.remove(o.mesh); l.length = 0; }; const set = (o, d) => Object.assign(o, d);
 
-function pose(G){
-  Object.assign(G,{freezePolice:true,freezeMissions:true,freezeFares:true,screen:'play',inCar:null});
-  hidePanels(G.H);
-  G.P.dead=false;
-}
-
-/** Clear the street: only what a scene adds stays on screen. */
-function hollow(G){
-  for(const t of G.traffic)t.mesh.visible=false;
-  for(const c of G.cars)c.mesh.visible=false;
-  for(const p of G.peds)p.parts.root.visible=false;
-}
-
-function seat(G,c){
-  Object.assign(c,{occupant:'player',player:true,speed:0,wrecked:false,hp:CONFIG.car.hp});
-  G.inCar=c;
-  G.P.pos.x=c.x;
-  G.P.pos.z=c.z;
-  G.P.yaw=c.heading;
-  G.P.group.visible=false;
-  syncCarMesh(c);
-}
-
-function stand(G,x,z,yaw){
-  const P=G.P;
-  P.pos.x=x;
-  P.pos.z=z;
-  P.yaw=yaw;
-  P.aim=true;
-  P.dead=false;
-  P.group.visible=true;
-  P.group.position.set(x,0,z);
-  P.group.rotation.set(0,yaw,0);
-}
-
-function car(G,x,z,h,color,taxi){
-  const c=makeCar(taxi?'taxi':'sedan',x,z,h,color,G.W);
-  G.traffic.push(c);
-  syncCarMesh(c);
+function swap(G, old, kind, x, z, h, col) {
+  if (old && old.mesh && old.mesh.parent) old.mesh.parent.remove(old.mesh);
+  const c = makeCar(kind, x, z, h, col); G.W.scene.add(c.mesh);
   return c;
 }
 
-function copAt(x,z,yaw,down){
-  const pos={x,z,set(){return this;}};
-  return {x,z,yaw,pos,mesh:null,state:down?'down':'run',cool:9,down:!!down,dead:!!down,downT:1,hp:down?0:60};
+function park(G, x, z, yaw, taxi) {
+  const c = makeCar(taxi ? 'taxi' : 'sedan', x, z, yaw, taxi ? C.taxi : C.sedan); set(c, { occupant: 'npc', traffic: true, edge: null, speed: 0 });
+  G.W.scene.add(c.mesh); G.traffic.push(c);
 }
 
-/** Marked cruiser facing a target; its officer on foot is returned. */
-function cop(G,x,z,tx,tz,foot){
-  const c=makeCar('police',x,z,Math.atan2(x-tx,z-tz),C.copbody,G.W);
-  Object.assign(c,{occupant:'npc',sirenOn:true,flashT:0.05});
-  G.PO.cars.push(c);
-  syncCarMesh(c);
-  const o=copAt(x,z,c.heading,false);
-  if(foot)G.PO.foot.push(o);
-  return o;
+const walker = (G, p) => G.peds.push(set(makeFarePed(G.W, G.city, G.rng, p[0], p[1]), { fare: false, state: 'walk', yaw: p[2] }));
+
+// Officer stub with the rig parts officerStep animates.
+function officer(G, x, z, dead) {
+  const root = new THREE.Group(), mat = new THREE.MeshLambertMaterial({ color: C.coptrim }), geo = new THREE.BoxGeometry(0.24, 0.6, 0.3); const at = (py, px) => { const m = new THREE.Mesh(geo, mat); m.position.set(px, py, 0); root.add(m); return m; };
+  const legs = [at(0.36, -0.13), at(0.36, 0.13)], torso = at(1.04, 0), armL = at(1.3, -0.34), armR = at(1.3, 0.34); root.position.set(x, 0, z);
+  root.rotation.z = dead ? Math.PI / 2 : 0; G.W.scene.add(root);
+  return { x, z, pos: { x, z }, yaw: 0, dead: !!dead, hp: dead ? 0 : 60, cool: 0.4, gait: 0, strafe: 1, strafeT: 2, mesh: root, rig: { root, torso, legs, armL, armR } };
 }
 
-function person(G,x,z,yaw,waiting){
-  const p=makeFarePed(G.W,G.city,rng,x,z);
-  Object.assign(p,{fare:!!waiting,state:waiting?'wait':'walk',edge:{from:0,to:0},t:0});
-  p.pos.x=x;
-  p.pos.z=z;
-  p.parts.root.position.set(x,0,z);
-  p.parts.root.rotation.set(0,yaw,0);
-  p.parts.root.visible=true;
-  G.peds.push(p);
-}
+const PEDS = [[27, 9, -1.2], [33, 10, 1.4], [26, 3, 2.6]];
 
-function chase(G){
-  pose(G);
-  hollow(G);
-  const c=G.m1Car;
-  Object.assign(c,{x:26,z:88,heading:0});
-  c.mesh.visible=true;
-  seat(G,c);
-  addStars(G.PO,3,G);
-  cop(G,24,100,26,70);
-  cop(G,-40,128,26,60);
-  car(G,76.8,44,0,C.sedan);
-  car(G,76.8,-4,0,C.taxi,true);
-  car(G,83.2,66,PI,0xd7d0c2);
-  for(let i=0;i<5;i++)person(G,8.4,52-i*6,PI,false);
-  G.W.yaw=0.06;
-  G.W.pitch=0.26;
-  G.H.setBanner('Three stars on Meridian. Lose them.',4000);
-}
+export function applyShot(name, G) {
+  try {
+    if (!G) return;
+    const { P, W, M, PO, m1Car: m1 } = G, cm = W.cam; const go = G.city.markers.glassOrchid, pk = G.city.pickup || { x: -40, z: -40 };
+        const at = (x, z, yaw, camYaw, pitch) => {
+      P.pos.set(x, 0, z); P.group.position.set(x, 0, z);
+      P.yaw = P.group.rotation.y = yaw; cm.yaw = camYaw;
+      cm.pitch = pitch;
+    }; hidePanels(G.H);
+    set(G, { screen: 'play', inCar: null }); drop(G.traffic);
+    drop(G.peds); PO.noSeeT = 0;
 
-function city(G){
-  pose(G);
-  hollow(G);
-  stand(G,30,6,-PI/2);
-  car(G,30,76.8,-PI/2,C.sedan);
-  car(G,70,83.2,PI/2,C.taxi,true);
-  const cab=G.cars.find((x)=>x.kind==='taxi');
-  if(cab){
-    cab.mesh.visible=true;
-    cab.x=36;
-    cab.z=-6;
-    cab.heading=0.9;
-    syncCarMesh(cab);
-  }
-  for(let i=0;i<4;i++)person(G,26+i*2.4,6+(i%2?2.7:-2.7),i%2?PI:0,i>2);
-  G.m1Car.mesh.visible=true;
-  if(!G.M.active){
-    G.freezeMissions=false;
-    startMission(G.M,G);
-    G.freezeMissions=true;
-  }
-  G.M.stage=0;
-  G.M.marker={x:G.m1Car.x,z:G.m1Car.z};
-  G.M.target=G.M.marker;
-  G.W.yaw=PI/2-0.3;
-  G.W.pitch=0.2;
-}
-
-function mission(G){
-  pose(G);
-  hollow(G);
-  const up=G.city.pickup;
-  Object.assign(G.P,{rifle:true,weapon:'rifle',ammo:60});
-  stand(G,up.x+3.5,up.z+1.5,PI*0.75);
-  addStars(G.PO,2,G);
-  const px=G.P.pos.x,pz=G.P.pos.z;
-  const o=cop(G,px-7,pz-7,px,pz,true);
-  G.PO.foot.push(copAt(px-5,pz-3.5,1.2,true));
-  spawnMuzzle({x:o.x,y:1.3,z:o.z});
-  spawnTracer({x:o.x,y:1.35,z:o.z},{x:px,y:1.15,z:pz});
-  for(let i=0;i<3;i++)person(G,up.x-6+i*4,up.z+7,i*0.5,false);
-  G.W.yaw=-PI*0.3;
-  G.W.pitch=0.3;
-  G.H.setBanner('Two stars in Verde Park. Rifle up.',4000);
-}
-
-function start(G){
-  pose(G);
-  hollow(G);
-  stand(G,-30,-28,0.6);
-  Object.assign(G.m1Car,{x:-22,z:-18,heading:0.7});
-  G.m1Car.mesh.visible=true;
-  syncCarMesh(G.m1Car);
-  car(G,30,76.8,-PI/2,C.taxi,true);
-  car(G,83.2,20,PI/2,C.sedan);
-  for(let i=0;i<4;i++)person(G,-34+i*4,-8,PI,false);
-  G.screen='title';
-  showPanel(G.H,'title');
-  G.orbit={x:-20,y:30,z:-10,yaw:-0.7,spin:0.1,dist:46};
-}
-
-const SCENES={chase,city,mission,start};
-
-/** Pose one scene; the title flips after two real rendered frames. */
-export function applyShot(name,G){
-  try{
-    if(!SCENES[name])throw new Error('unknown shot '+name);
-    SCENES[name](G);
-    G.shot=name;
-    let done=0;
-    requestAnimationFrame(()=>requestAnimationFrame(()=>{
-      if(done++)return;
-      window.__shotReady=true;
-      document.title='SB-'+name+'-ok';
-    }));
-    return true;
-  }catch(err){
-    document.title=String((err&&err.stack)||err).slice(0,320);
-    return false;
+    if (name === 'chase') {
+      const car = swap(G, m1, 'sport', 12, 88, 0, C.sport); set(car, { player: true, occupant: 'player' });
+      set(G, { m1Car: car, inCar: car, cars: [car] }); at(12, 88, 0, Math.PI, 0.28);
+      PO.stars = 3; const near = swap(G, PO.cars[0], 'police', 24, 100, 0.8, C.copbody);
+      const far = swap(G, PO.cars[1], 'police', -8, 132, 0.6, C.copbody); near.speed = 15;
+      far.speed = 18; drop(PO.foot);
+      PO.cars = [near, far];
+      for (const a of [[7, 116, Math.PI, 1], [-5, 74, 0, 0], [17, 56, 0, 0]]) park(G, ...a);
+      G.objective = { title: 'Wheels for Vesper', text: 'shake the heat', dist: 64, timer: 0 };
+      M.marker = M.target = go;
+    } else if (name === 'city') {
+      at(30, 6, -Math.PI / 2, Math.PI * 0.84, 0.24);
+      for (const a of [[34, 6, Math.PI / 2, 1], [-2, 6, Math.PI / 2, 0], [22, -2, -Math.PI / 2, 0]]) park(G, ...a);
+      PEDS.forEach((p) => walker(G, p)); PO.stars = 0;
+      const brief = 'deliver the coupe to the Glass Orchid';
+      const m1a = { id: 'm1', title: 'Wheels for Vesper', state: 'deliver', stageIndex: 1, markX: go.x, markZ: go.z, coupe: m1 || null };
+      set(M, { index: 0, fail: null, step: brief, marker: go, target: go, active: m1a }); G.objective = { title: 'Wheels for Vesper', text: brief, dist: 38, timer: 0 };
+    } else if (name === 'mission') {
+      at(pk.x, pk.z, Math.PI * 0.18, Math.PI * 0.58, 0.18); set(P, { rifle: true, weapon: 'rifle', ammo: 60, aim: true });
+      PO.stars = 2; const cop = officer(G, pk.x + 10, pk.z + 4, 0);
+      const cruiser = swap(G, PO.cars[0], 'police', pk.x + 17, pk.z + 15, 0.75, C.copbody); drop(PO.foot);
+      PO.foot = [cop, officer(G, pk.x + 5, pk.z - 7, 1)]; cruiser.speed = 6;
+      PO.cars = [cruiser]; spawnTracer({ x: cop.x, y: 1.25, z: cop.z }, { x: pk.x, y: 1.1, z: pk.z });
+      const m2a = { id: 'm2', title: 'Shake the Heat', state: 'evade', markX: pk.x, markZ: pk.z, timer: 52 };
+      set(M, { index: 1, timer: 52, marker: null, active: m2a }); G.objective = { title: 'Shake the Heat', text: 'get clear of the officers', dist: 12, timer: 52 };
+    } else if (name === 'start') {
+      G.screen = 'title'; at(pk.x, pk.z, Math.PI * 1.2, Math.PI * 0.7, 0.5);
+      showPanel(G.H, 'title');
+      if (m1) {
+        set(m1, { x: pk.x + 13, z: pk.z + 3, heading: Math.PI * 1.3 }); m1.mesh.position.set(m1.x, 0, m1.z);
+        m1.mesh.rotation.y = m1.heading;
+      }
+      W.camera.position.set(pk.x + 4, 30, pk.z + 46); W.camera.lookAt(70, 14, -70);
+    } else throw new Error('unknown shot ' + name);
+  } catch (e) {
+    document.title = 'SB-error-' + String((e && e.message) || e).slice(0, 100);
   }
 }

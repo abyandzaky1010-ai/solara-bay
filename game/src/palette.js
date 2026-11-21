@@ -1,5 +1,7 @@
-// Solara Bay colour palette: sun-bleached pastels over warm asphalt.
-// Every colour is named for the thing it paints; materials are cached per hex+mode.
+// Palette for a sun-bleached coastal city: pastel stucco, blue-green sea,
+// warm asphalt. material() hands out shared instances so hundreds of meshes
+// cost a handful of shader programs.
+
 import * as THREE from 'three';
 
 export const C = {
@@ -32,28 +34,38 @@ export const C = {
   marker: 0xffd24a,
 };
 
-const cache = new Map();
+const lambertCache = new Map();
+const phongCache = new Map();
+const basicCache = new Map();
 
 /**
- * Shared material for a hex colour.
- * flat   -> unlit (markers, window tint, road paint)
- * glassy -> glossy phong (towers, car paint)
- * otherwise -> matte lambert (default surface look)
+ * Shared material for a colour. glassy -> shiny Phong, flat -> unlit Basic.
  */
-export function material(hex, { flat = false, glassy = false, opacity = 1 } = {}) {
-  const key = `${hex}|${flat ? 'f' : ''}${glassy ? 'g' : ''}|${opacity}`;
-  const hit = cache.get(key);
-  if (hit) return hit;
-
-  let mat;
+export function material(hex, { flat = false, glassy = false } = {}) {
   if (flat) {
-    mat = new THREE.MeshBasicMaterial({ color: hex });
-    if (opacity < 1) { mat.transparent = true; mat.opacity = opacity; }
-  } else if (glassy) {
-    mat = new THREE.MeshPhongMaterial({ color: hex, shininess: 80, specular: 0xdfefff });
-  } else {
-    mat = new THREE.MeshLambertMaterial({ color: hex });
+    let m = basicCache.get(hex);
+    if (!m) {
+      m = new THREE.MeshBasicMaterial({ color: hex });
+      basicCache.set(hex, m);
+    }
+    return m;
   }
-  cache.set(key, mat);
-  return mat;
+  if (glassy) {
+    let p = phongCache.get(hex);
+    if (!p) {
+      p = new THREE.MeshPhongMaterial({ color: hex, shininess: 80, specular: 0xdfefff });
+      phongCache.set(hex, p);
+    }
+    return p;
+  }
+  let l = lambertCache.get(hex);
+  if (!l) {
+    l = new THREE.MeshLambertMaterial({ color: hex });
+    lambertCache.set(hex, l);
+  }
+  return l;
+}
+
+export function pickFrom(list, rng, key) {
+  return list[rng.int(0, list.length - 1)];
 }
