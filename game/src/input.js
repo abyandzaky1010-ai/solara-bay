@@ -1,56 +1,28 @@
-export const keys = {
-  forward: false,
-  backward: false,
-  left: false,
-  right: false,
-  KeyW: false,
-  KeyS: false,
-  KeyA: false,
-  KeyD: false,
-  ShiftLeft: false,
-  ShiftRight: false,
-  KeyE: false,
-};
+// Keyboard + mouse state. W.keys holds held keys, W.pressed holds fresh presses (cleared each frame),
+// mouse deltas accumulate while the pointer is locked; click is a one-frame edge for shooting.
+import { W } from './world.js';
 
-export function updateKeys(event) {
-  if (event.type === 'keydown' || event.type === 'keyup') {
-    const pressed = event.type === 'keydown';
-    switch (event.code) {
-      case 'KeyW': case 'ArrowUp': keys.forward = pressed; keys[event.code] = pressed; break;
-      case 'KeyS': case 'ArrowDown': keys.backward = pressed; keys[event.code] = pressed; break;
-      case 'KeyA': case 'ArrowLeft': keys.left = pressed; keys[event.code] = pressed; break;
-      case 'KeyD': case 'ArrowRight': keys.right = pressed; keys[event.code] = pressed; break;
-      case 'ShiftLeft': case 'ShiftRight': keys[event.code] = pressed; break;
-      case 'KeyE': keys[event.code] = pressed; break;
-    }
-  }
-}
-
-export function requestPointerLock() {
-  document.body.requestPointerLock();
-}
-
-export function releasePointerLock() {
-  document.exitPointerLock();
-}
-
-export const mouse = { x: 0 };
-
-export function updateMouseLocked() {
-  if (!document.pointerLockElement) return;
-}
-
-export function clearKeys() {
-  for (const key of Object.keys(keys)) {
-    keys[key] = false;
-  }
-}
-
-export function initInput() {
-  document.addEventListener('keydown', updateKeys);
-  document.addEventListener('keyup', updateKeys);
-  window.addEventListener('blur', clearKeys);
-  document.addEventListener('mousemove', (event) => {
-    if (document.pointerLockElement) mouse.x += event.movementX;
+export function initInput(canvas) {
+  window.addEventListener('keydown', (e) => {
+    if (!W.keys[e.code]) W.pressed[e.code] = true;
+    W.keys[e.code] = true;
+    if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
   });
+  window.addEventListener('keyup', (e) => { W.keys[e.code] = false; });
+  canvas.addEventListener('mousedown', (e) => { if (e.button === 0) W.clicked = true; });
+  document.addEventListener('mousemove', (e) => {
+    if (document.pointerLockElement === canvas) {
+      W.mouseDX += e.movementX;
+      W.mouseDY += e.movementY;
+    }
+  });
+  canvas.addEventListener('click', () => {
+    if (W.mode === 'play' && document.pointerLockElement !== canvas) canvas.requestPointerLock();
+  });
+}
+
+export function consumeMouse() {
+  const dx = W.mouseDX, dy = W.mouseDY;
+  W.mouseDX = 0; W.mouseDY = 0;
+  return [dx, dy];
 }

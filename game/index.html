@@ -3,15 +3,88 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Solara Bay</title>
+<title>Solara Bay</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #11141b; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e141c; font-family: 'Segoe UI', system-ui, sans-serif; color: #f2f5fa; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .hidden { display: none !important; }
+  #hud { position: fixed; inset: 0; pointer-events: none; }
+  .panel-bg { background: rgba(14,18,26,0.55); border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; }
+  #objective { position: absolute; top: 14px; left: 14px; max-width: 340px; padding: 8px 12px; font-size: 14px; line-height: 1.35; }
+  #objective b { color: #ffc857; display: block; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+  #stars { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); font-size: 26px; letter-spacing: 4px; color: #ffc857; text-shadow: 0 2px 6px rgba(0,0,0,0.6); }
+  #stars .off { color: rgba(255,255,255,0.25); }
+  #stars.blink { animation: blink 0.5s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0.35; } }
+  #minimap { position: absolute; top: 14px; right: 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); background: #0e141c; }
+  #money { position: absolute; top: 212px; right: 14px; padding: 6px 12px; font-size: 18px; font-weight: 600; color: #7ee08a; }
+  #vitals { position: absolute; left: 14px; bottom: 14px; width: 220px; }
+  #hpbar { height: 14px; border-radius: 7px; background: rgba(255,255,255,0.12); overflow: hidden; }
+  #hpfill { height: 100%; width: 100%; background: linear-gradient(90deg, #e05050, #ffc857); transition: width 0.15s; }
+  #gun { position: absolute; right: 14px; bottom: 14px; padding: 6px 12px; font-size: 14px; text-align: right; }
+  #speed { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); font-size: 22px; font-weight: 700; color: #ffc857; }
+  #prompt { position: absolute; left: 50%; bottom: 90px; transform: translateX(-50%); padding: 6px 14px; font-size: 15px; color: #ffc857; }
+  #dialog { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); max-width: 560px; padding: 8px 16px; font-size: 15px; font-style: italic; color: #ffe9a8; }
+  #vignette { position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 120px rgba(220,30,30,0); }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(8,10,16,0.45); }
+  .card { max-width: 620px; padding: 28px 34px; text-align: center; background: rgba(14,18,26,0.88); border: 1px solid rgba(255,200,87,0.35); border-radius: 14px; }
+  .card h1 { margin: 0 0 4px; font-size: 44px; letter-spacing: 6px; color: #ffc857; }
+  .card h2 { margin: 0 0 14px; font-size: 15px; font-weight: 500; color: #9fd4f5; }
+  .card p { font-size: 14px; line-height: 1.5; color: #cfd6e4; text-align: left; }
+  .controls { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 13px; text-align: left; margin: 12px auto; max-width: 430px; color: #cfd6e4; }
+  .controls b { color: #ffc857; font-weight: 600; }
+  button { pointer-events: auto; cursor: pointer; margin: 6px; padding: 10px 22px; font-size: 16px; border-radius: 8px; border: 1px solid #ffc857; background: #ffc857; color: #1a1408; font-weight: 700; }
+  button.ghost { background: transparent; color: #ffc857; }
+  .shopitem { display: flex; justify-content: space-between; gap: 20px; padding: 6px 0; font-size: 15px; }
+  .big { font-size: 40px; letter-spacing: 8px; color: #ffc857; font-weight: 800; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
-  <script type="importmap">{"imports":{"three":"./vendor/three/three.module.min.js"}}</script>
-  <script type="module" src="./src/main.js"></script>
+<div id="hud" class="hidden">
+  <div id="objective" class="panel-bg"><b>Objective</b><span id="objtext"></span></div>
+  <div id="stars"></div>
+  <canvas id="minimap" width="190" height="190"></canvas>
+  <div id="money" class="panel-bg">$0</div>
+  <div id="vitals"><div id="hpbar"><div id="hpfill"></div></div></div>
+  <div id="gun" class="panel-bg"></div>
+  <div id="speed"></div>
+  <div id="prompt" class="panel-bg"></div>
+  <div id="dialog" class="panel-bg hidden"></div>
+</div>
+<div id="vignette"></div>
+
+<div id="start" class="overlay">
+  <div class="card">
+    <h1>SOLARA BAY</h1>
+    <h2>an open-world crime story in your browser</h2>
+    <p>Solara Bay, 2026. The bay is bright, the rent is due, and Mara Vox wants her money back. Work the streets on foot or behind the wheel: run her errands, drive a cab for fares, and stay out of the police's way — or don't.</p>
+    <div class="controls">
+      <b>W A S D</b><span>move / drive</span>
+      <b>Mouse</b><span>look (click the game to lock)</span>
+      <b>Shift</b><span>sprint</span>
+      <b>Space</b><span>jump / handbrake</span>
+      <b>E</b><span>enter or exit a car, talk</span>
+      <b>Click</b><span>shoot</span>
+      <b>R</b><span>reload</span>
+      <b>B</b><span>shop (at the mart)</span>
+      <b>Esc</b><span>pause</span>
+    </div>
+    <button id="btnNew">New game</button>
+    <button id="btnContinue" class="ghost hidden">Continue</button>
+  </div>
+</div>
+<div id="pause" class="overlay hidden"><div class="card"><h1 style="font-size:28px">PAUSED</h1><p>Press Esc or click resume.</p><button id="btnResume">Resume</button></div></div>
+<div id="busted" class="overlay hidden"><div class="card"><div class="big">BUSTED</div><p>The Solara Bay police took their cut. You wake up at the clinic.</p></div></div>
+<div id="wasted" class="overlay hidden"><div class="card"><div class="big">WASTED</div><p>You wake up at the clinic, lighter by $100.</p></div></div>
+<div id="mdone" class="overlay hidden"><div class="card"><h1 style="font-size:26px" id="mdtitle">MISSION COMPLETE</h1><p id="mdtext"></p><button id="btnOk">Nice</button></div></div>
+<div id="shop" class="overlay hidden"><div class="card" style="text-align:left"><h1 style="font-size:24px">SOLARA MART</h1>
+  <div class="shopitem"><span><b>1</b> — Medkit (full HP)</span><span>$50</span></div>
+  <div class="shopitem"><span><b>2</b> — Pistol ammo (+24)</span><span>$40</span></div>
+  <div class="shopitem"><span><b>3</b> — Repair your car</span><span>$120</span></div>
+  <p>Press B to close.</p></div></div>
+
+<script type="importmap">{ "imports": { "three": "./vendor/three/three.module.min.js" } }</script>
+<script type="module" src="./src/main.js"></script>
 </body>
 </html>

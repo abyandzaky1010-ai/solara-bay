@@ -1,24 +1,14 @@
-// The sun-soaked day palette: warm sun, blue sky, pale buildings with
-// coloured accents, green parks, blue water. Every colour the city, cars,
-// pedestrians and HUD are built from.
-export const PALETTE = {
-  sky: 0x9fd8ff, // clear morning-blue
-  fog: 0xcfe8f5, // pale haze for depth
-  sun: 0xfff2cf, // warm key light
-  ground: 0x8ea36a, // dry grass around the blocks
-  road: 0x4a4f57, // asphalt
-  roadLine: 0xe8d96a, // painted lane lines
-  sidewalk: 0xb9b4a8, // warm concrete
-  park: 0x6f9e4f, // sunlit lawn
-  water: 0x3f86c4, // the bay
-  waterDeep: 0x2f6699,
-  building: [0xf1e3cd, 0xe8d3b3, 0xdcc8a9, 0xcfd6d8, 0xd8c7c0, 0xbfd3cf, 0xe0cfa8, 0xc9d4e0],
-  accent: [0xd96c3f, 0x3f8fa3, 0x8f6bb0, 0xd8a93f, 0x6fa36f],
-  window: 0x5f718a,
-  car: [0xd84f3f, 0x3f6fd8, 0xd8a03f, 0x5fb06f, 0xd8d8d8, 0x3f5a6b, 0x8a4fd8, 0xd86f9f],
-  carTrim: 0x2f3f4f,
-  player: 0x3a4a5f,
-  playerSkin: 0xe8b48a,
-  peds: [0xc45f5f, 0x5f8fc4, 0x6fbf7f, 0xc4a55f, 0x9f6fc4, 0x5fb8b0],
-  police: 0x2f3f7f,
+// Sun-soaked day palette for Solara Bay: warm sun, blue sky, pale buildings, green park, blue bay.
+export const PAL = {
+  sky: 0x9fd4f5, fog: 0xd6e9f2, sun: 0xfff1cf,
+  hemiSky: 0xcfe6ff, hemiGround: 0x9aa87e,
+  ground: 0xa8c47e, sand: 0xe9d9a4, road: 0x41454d, lane: 0xd8d3c0,
+  walk: 0xbcb5a5, park: 0x63b264, water: 0x2f9fd0, pier: 0x9a7648,
+  builds: [0xf4e7d3, 0xecd0ac, 0xdbe8f4, 0xf2bfa2, 0xd3e2c9, 0xf6ddba, 0xe9e4f2, 0xf8f4ea],
+  trim: [0xe07850, 0x5aa0d8, 0x69a86b, 0xd9a441, 0xb07cc8],
+  cars: [0xd84b4b, 0x4b7fd8, 0xe8c832, 0x48b8a0, 0xc9c9d2, 0x7a5ac8, 0xe87898, 0x35353d],
+  taxi: 0xf5c518, police: 0x27324e, gang: 0x5a2e2e,
+  windowDark: '#2c3e50', windowLit: '#ffe9a8',
+  pedShirts: [0xc86a4a, 0x6a8ac8, 0xc8b04a, 0x7ac87a, 0xb06ac8, 0xe0e0e0, 0xd87a9a],
+  accent: '#ffc857',
 };
