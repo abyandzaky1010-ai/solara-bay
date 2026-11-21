@@ -1,199 +1,180 @@
-// Ambient traffic: sedans and a pair of cabs looping the street grid on the
-// right-hand lane. Each car is owned by one road edge and slides along it by a
-// normalised parameter, so it can never leave the graph or cut a corner, and a
-// stale one recycles in O(1).
-
+// Traffic: ambient cars that keep to their own lane of the street grid, give way
+// to whatever is ahead, and recycle themselves out of the player's sight.
 import { CONFIG } from './config.js';
 import { C } from './palette.js';
 import { makeCar } from './car.js';
 
-const TC = CONFIG.traffic;
-const LANE = TC.laneOffset;
-const HIT_SPEED = 3;
-const BUMP_DAMAGE = 4;
-const PAINTS = [C.sedan, 0xc7b9a2, 0x9cbfae, 0xb8a7c9, 0xd8c8b0];
+const T = CONFIG.traffic, SIDES = [-1, 1], STRAIGHT = 0.6, DECEL = 12, CLEAR = 1.2, CULL = 130, NEAR = 40, FAR = 60;
+const BUMP_SPEED = 3, BUMP_DMG = 4, PAINT = [C.sedan, 0xd7d2c6, 0x6c7f92, 0xb9c3cc, 0xcf9f7a];
 
-function edgeLength(W, from, to) {
-  const a = W.roads.nodes[from];
-  const b = W.roads.nodes[to];
-  return Math.hypot(b.x - a.x, b.z - a.z) || 1;
-}
+// Unit heading along a->b, its right-hand normal, and the edge length.
+const axis = (a, b) => {
+  const len = Math.hypot(b.x - a.x, b.z - a.z) || 1, dx = (b.x - a.x) / len, dz = (b.z - a.z) / len;
+  return { nx: -dz, nz: dx, len };
+};
 
-// Point on an edge at t, pushed into the right-hand lane; ends are inset past
-// the junction mouth so nobody parks inside the cross street.
-function sideOf(W, from, to, t) {
-  const a = W.roads.nodes[from];
-  const b = W.roads.nodes[to];
-  const len = edgeLength(W, from, to);
-  const inset = (CONFIG.world.roadHalf + 2) / len;
-  const k = inset + (1 - 2 * inset) * t;
-  const fx = (b.x - a.x) / len;
-  const fz = (b.z - a.z) / len;
-  return { x: a.x + (b.x - a.x) * k + fz * LANE, z: a.z + (b.z - a.z) * k - fx * LANE, heading: Math.atan2(fx, fz) };
-}
+// Point `t` of the way from a to b, `side` lanes off the centre line.
+const laneAt = (a, b, side, t) => {
+  const s = axis(a, b), off = T.laneOffset * side;
+  return { x: a.x + (b.x - a.x) * t + s.nx * off, z: a.z + (b.z - a.z) * t + s.nz * off };
+};
 
-// Straight 60%, turns 40%; a U-turn only at a dead end.
-function pickNextNode(W, from, to, rng) {
-  const node = W.roads.nodes[to];
-  const back = W.roads.nodes[from];
-  const options = node.neighbors.filter((n) => n !== from);
-  if (!options.length) return from;
-  const ax = back.x - node.x;
-  const az = back.z - node.z;
-  const backLen = Math.hypot(ax, az) || 1;
-  const straight = [];
-  const turns = [];
-  for (const n of options) {
-    const nb = W.roads.nodes[n];
-    const dot = ((nb.x - node.x) * ax + (nb.z - node.z) * az) / (edgeLength(W, to, n) * backLen);
-    (dot > 0.5 ? straight : turns).push(n);
-  }
-  const pool = !turns.length || (straight.length && rng.next() < 0.6) ? straight : turns;
-  const pick = pool.length ? pool : options;
-  return pick[rng.int(0, pick.length - 1)];
-}
-
-function placeOnEdge(car, W, rng, from, to, t) {
-  const p = sideOf(W, from, to, t);
-  Object.assign(car, { edge: { from, to, t }, x: p.x, z: p.z, heading: p.heading, waitClear: 0, steerVis: 0,
-    speed: 0, cruise: TC.speed * rng.range(0.82, 1.12) });
-  car.mesh.visible = true;
+// Put the car's x/z where its lane says it is; face it down the edge.
+function seat(car) {
+  const { from, to, t } = car.edge, p = laneAt(from, to, car.side, t);
+  car.x = p.x;
+  car.z = p.z;
+  car.heading = Math.atan2(from.x - to.x, from.z - to.z);
   car.mesh.position.set(p.x, 0, p.z);
-  car.mesh.rotation.set(0, p.heading, 0);
+  car.mesh.rotation.y = car.heading;
 }
 
-// Random edge whose midpoint sits 40-84 m from a point (any edge if none fits).
-function edgeNearPoint(W, rng, x, z, minDist, maxDist) {
-  const edges = [];
-  const nodes = W.roads.nodes;
-  for (let i = 0; i < nodes.length; i += 1) {
-    for (const n of nodes[i].neighbors) {
-      if (n < i) continue;
-      const d = Math.hypot((nodes[i].x + nodes[n].x) / 2 - x, (nodes[i].z + nodes[n].z) / 2 - z);
-      if (d >= minDist && d <= maxDist) edges.push([i, n]);
-    }
+// Board an edge and sit on it.
+function board(car, nodes, fromI, toI, side, t) {
+  car.edge = { from: nodes[fromI], to: nodes[toI], t };
+  car.side = side;
+  seat(car);
+}
+
+/** The neighbour one step from idx towards (dx,dz), or -1 at a dead end. */
+export function nextNodeIn(nodes, idx, dx, dz) {
+  const from = nodes[idx];
+  if (!from) return -1;
+  for (const n of from.neighbors) {
+    const to = nodes[n];
+    if (Math.sign(to.x - from.x) === Math.sign(dx) && Math.sign(to.z - from.z) === Math.sign(dz)) return n;
   }
-  const pick = edges.length ? edges[rng.int(0, edges.length - 1)]
-    : [rng.int(0, nodes.length - 1), nodes[0].neighbors[0]];
-  return rng.chance(0.5) ? pick : [pick[1], pick[0]];
+  return -1;
 }
 
+// Junction: straight six times in ten, else a turn; reverse only at a dead end.
+function nextExit(nodes, fromI, toI, rng) {
+  const here = nodes[toI], came = nodes[fromI];
+  const on = nextNodeIn(nodes, toI, here.x - came.x, here.z - came.z);
+  const turns = here.neighbors.filter((n) => n !== fromI && n !== on);
+  if (on >= 0 && (rng.chance(STRAIGHT) || !turns.length)) return on;
+  return turns.length ? turns[rng.int(0, turns.length - 1)] : on >= 0 ? on : fromI;
+}
+
+/** Eleven street cars, two of them taxis, each on its own lane. */
 export function spawnTraffic(W, rng, count) {
-  const list = [];
-  const total = Math.max(1, (count | 0) || TC.count);
-  for (let i = 0; i < total; i += 1) {
-    const kind = i < 2 ? 'taxi' : 'sedan';
-    const car = makeCar(kind, 0, 0, 0, kind === 'taxi' ? C.taxi : PAINTS[rng.int(0, PAINTS.length - 1)]);
-    Object.assign(car, { occupant: 'npc', traffic: true, rng, honkT: 0 });
-    car.mesh.castShadow = true;
-    const [from, to] = edgeNearPoint(W, rng, 0, 0, 20, 260);
-    placeOnEdge(car, W, rng, from, to, rng.range(0.15, 0.85));
+  const nodes = W.roads.nodes, links = W.roads.links, total = count || T.count, fleet = [];
+  for (let i = 0, guard = 0; i < total && guard < 400; guard += 1) {
+    const link = links[rng.int(0, links.length - 1)], taxi = i < Math.round(total * (2 / 11));
+    const car = makeCar(taxi ? 'taxi' : 'sedan', 0, 0, 0, taxi ? C.taxi : PAINT[i % PAINT.length]);
+    Object.assign(car, { traffic: true, occupant: 'npc', yield: 0, bumpT: 0, seat: i, speed: T.speed });
+    board(car, nodes, link[0], link[1], SIDES[rng.int(0, 1)], 0.2 + (i / total) * 0.55);
+    // Leave room so nobody starts nose to nose.
+    if (fleet.some((o) => Math.hypot(o.x - car.x, o.z - car.z) < 10)) continue;
     W.scene.add(car.mesh);
-    list.push(car);
+    fleet.push(car);
+    i += 1;
   }
-  return list;
+  return fleet;
 }
 
-export function respawnTraffic(list, W, rng, pos) {
-  const here = pos || { x: 0, z: 0 };
-  for (const car of list) {
-    if (Math.hypot(car.x - here.x, car.z - here.z) < TC.despawnDist) continue;
-    const [from, to] = edgeNearPoint(W, rng, here.x, here.z, 40, 84);
-    placeOnEdge(car, W, rng, from, to, rng.range(0.1, 0.9));
+// Point `metres` ahead of a car.
+const probeAt = (car, metres) => ({ x: car.x - Math.sin(car.heading) * metres, z: car.z - Math.cos(car.heading) * metres });
+
+// A strict fleet order decides who gives way, so two cars can never wait on each other.
+const blocks = (car, other) => typeof car.seat !== 'number' || typeof other.seat !== 'number' || car.seat > other.seat;
+
+// The first body at the probe tip, if any.
+function inTheWay(W, G, car) {
+  const at = probeAt(car, T.probeAhead * 0.8);
+  const hit = (o, r) => Math.hypot(o.x - at.x, o.z - at.z) < 1.2 + r && blocks(car, o);
+  for (const o of G.traffic || []) if (o !== car && !o.taken && hit(o, 1.4)) return o;
+  for (const o of G.cars || []) if (!o.wrecked && hit(o, 1.4)) return o;
+  if (G.inCar && hit(G.inCar, 1.4)) return G.inCar;
+  if (!G.inCar && G.P && !G.P.dead && hit(G.P.pos, 0.4)) return G.P;
+  for (const p of G.peds || []) if (!p.riding && p.state !== 'down' && hit(p.pos, 0.4)) return p;
+  for (const b of W.colliders) if (at.x > b.minX && at.x < b.maxX && at.z > b.minZ && at.z < b.maxZ) return b;
+  return null;
+}
+
+// A driven car bumping a street car: a dent and a cabbie's horn.
+function graze(car, G) {
+  const hit = G.inCar;
+  if (!hit || car.bumpT > 0 || Math.hypot(hit.x - car.x, hit.z - car.z) > 4.2 || Math.abs(hit.speed) < BUMP_SPEED) return;
+  car.bumpT = 2.5;
+  car.hp = Math.max(0, car.hp - BUMP_DMG);
+  G.damageTrafficCar?.(car, BUMP_DMG);
+  G.sound?.honk?.();
+}
+
+// One car, one fixed step: give way, roll, turn at the junction, follow the lane.
+function drive(car, W, G, dt) {
+  const nodes = W.roads.nodes;
+  car.yield = car.wrecked || inTheWay(W, G, car) ? CLEAR : Math.max(0, car.yield - dt);
+  car.speed += Math.max(-DECEL * 1.5 * dt, Math.min(DECEL * dt, (car.yield > 0 ? 0 : T.speed) - car.speed));
+  car.bumpT = Math.max(0, car.bumpT - dt);
+
+  car.edge.t += (car.speed * dt) / axis(car.edge.from, car.edge.to).len;
+  if (car.edge.t >= 1) {
+    // Past the junction: turn, and carry the momentum over on the new edge.
+    const over = Math.min(0.9, car.edge.t - 1), fromI = nodes.indexOf(car.edge.from), toI = nodes.indexOf(car.edge.to);
+    board(car, nodes, toI, nextExit(nodes, fromI, toI, G.rng || STILL), car.side, over);
+  } else {
+    seat(car);
+  }
+  for (const w of car.mesh.userData.wheels || []) w.rotation.x -= (car.speed * dt) / 0.34;
+  graze(car, G);
+}
+
+const STILL = { chance: () => false, int: () => 0 };
+
+// A car the player has taken over leaves the fleet; its slot re-seeds out of sight.
+function handOver(cars, W, G, at) {
+  for (const car of cars) {
+    if (!car.taken && !car.player) continue;
+    car.mesh.visible = false;
+    respawnTraffic(cars, W, G.rng, at, car);
   }
 }
 
-function bodyPos(body) {
-  if (!body) return null;
-  return body.pos ? body.pos : (typeof body.x === 'number' ? body : null);
-}
-
-// Gap in metres to the nearest solid thing inside the 6 m probe strip ahead of
-// the bumper; Infinity when the lane is clear.
-function probeLane(car, G) {
-  const look = TC.probeAhead;
-  const fx = Math.sin(car.heading);
-  const fz = Math.cos(car.heading);
-  let gap = Infinity;
-  const test = (p, radius) => {
-    const dx = p.x - car.x;
-    const dz = p.z - car.z;
-    const ahead = dx * fx + dz * fz;
-    if (ahead < -radius || ahead > look + radius) return;
-    if (Math.abs(dx * fz - dz * fx) > car.radius + radius) return;
-    gap = Math.min(gap, Math.max(0, ahead - radius));
-  };
-  for (const other of G.traffic || []) if (other !== car && !other.wrecked) test(other, other.radius || 1.4);
-  for (const other of G.cars || []) if (!other.wrecked && other.mesh && other.mesh.visible) test(other, other.radius || 1.4);
-  for (const ped of G.peds || []) {
-    if (ped && ped.pos && ped.state !== 'down' && ped.state !== 'ride' && ped.state !== 'wait') {
-      test({ x: ped.pos.x, z: ped.pos.z }, 0.6);
-    }
-  }
-  const player = bodyPos(G.P);
-  if (player && !G.inCar) test(player, CONFIG.player.radius || 0.55);
-  return gap;
-}
-
-// Player car nudging a cab: both lose a little paint and the horn complains.
-function handlePlayerBump(car, G) {
-  const inCar = G.inCar;
-  if (!inCar || inCar === car) return;
-  const closing = Math.abs(inCar.speed) - Math.abs(car.speed);
-  if (closing < HIT_SPEED || Math.hypot(inCar.x - car.x, inCar.z - car.z) > inCar.radius + car.radius + 0.5) return;
-  inCar.hp = Math.max(0, inCar.hp - BUMP_DAMAGE);
-  inCar.speed *= 0.7;
-  car.hp = Math.max(1, car.hp - 2);
-  car.speed = Math.max(car.speed, Math.abs(inCar.speed) * 0.4);
-  if (G.sound && G.sound.honk) G.sound.honk();
-}
-
+/** Roll the fleet one step and recycle whatever the player has left behind. */
 export function updateTraffic(list, W, G, dt) {
-  if (!list || !list.length || !W || !W.roads) return;
-  const here = G || {};
-  const player = bodyPos(here.inCar) || bodyPos(here.P) || { x: 0, z: 0 };
-
+  if (!list || !list.length) return;
+  // Distance is measured from the driven car, or from the player on foot.
+  const where = G.inCar || G.P?.pos || { x: 0, z: 0 };
+  const at = { x: where.x ?? where.pos.x, z: where.z ?? where.pos.z };
+  handOver(list, W, G, at);
   for (const car of list) {
-    if (!car.edge || car.wrecked) {
-      car.mesh.visible = false;
-      continue;
-    }
-    car.honkT = Math.max(0, (car.honkT || 0) - dt);
+    if (car.taken || car.player) continue;
+    drive(car, W, G, dt);
+    if (Math.hypot(car.x - at.x, car.z - at.z) > CULL) respawnTraffic(list, W, G.rng, at, car);
+  }
+}
 
-    // Brake hard when the bumper is crowded, wait out a clear spell, else
-    // creep back up to cruise speed.
-    const gap = probeLane(car, here);
-    if (gap < TC.probeAhead) {
-      car.speed = Math.max(0, Math.min(car.speed, (gap / TC.probeAhead) * 6));
-      car.waitClear = TC.clearWait;
-    } else if (car.waitClear > 0) {
-      car.waitClear = Math.max(0, car.waitClear - dt);
-      car.speed = 0;
-    } else {
-      car.speed = Math.min(car.cruise, car.speed + 9 * dt);
-    }
+// Node closest to a point 50 m out along `spin`, if the 40-60 m ring is empty.
+function ringNode(nodes, at, spin) {
+  const x = at.x + Math.cos(spin) * 50, z = at.z + Math.sin(spin) * 50;
+  let best = 0, bestD = Infinity;
+  nodes.forEach((n, i) => {
+    const d = (n.x - x) ** 2 + (n.z - z) ** 2;
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  return best;
+}
 
-    car.edge.t += (car.speed * dt) / edgeLength(W, car.edge.from, car.edge.to);
-    if (car.edge.t >= 1) {
-      // Carry the overshoot into the next edge so speed stays even.
-      const carry = Math.min(0.4, car.edge.t - 1);
-      const next = pickNextNode(W, car.edge.from, car.edge.to, car.rng || here.rng);
-      car.edge = { from: car.edge.to, to: next, t: carry };
-      car.speed *= 0.82;
-    }
+// A spot past the junction mouth that no other car already sits on.
+function freeLane(nodes, fromI, toI, side, fleet) {
+  const taken = (p) => fleet.some((o) => Math.hypot(o.x - p.x, o.z - p.z) < 9);
+  return [0.35, 0.5, 0.2, 0.65, 0.8].find((t) => !taken(laneAt(nodes[fromI], nodes[toI], side, t))) ?? 0.45;
+}
 
-    const p = sideOf(W, car.edge.from, car.edge.to, car.edge.t);
-    Object.assign(car, { x: p.x, z: p.z, heading: p.heading, steerVis: 0 });
-    car.mesh.position.set(p.x, 0, p.z);
-    car.mesh.rotation.set(0, p.heading, 0);
-    const wheels = car.mesh.userData && car.mesh.userData.wheels;
-    if (wheels) for (const w of wheels) w.rotation.x += car.speed * dt * 2.4;
-
-    handlePlayerBump(car, here);
-
-    // Nobody is watching a cab three streets away: recycle it near the player.
-    if (Math.hypot(car.x - player.x, car.z - player.z) > TC.despawnDist) {
-      respawnTraffic([car], W, car.rng || here.rng, player);
-    }
+/** Move one car, or all of them, onto a road 40-60 m out. */
+export function respawnTraffic(list, W, rng, pos, only) {
+  const nodes = W.roads.nodes, at = pos || { x: 0, z: 0 }, spin = rng.angle ? rng.angle() : rng.range(0, 6.283);
+  // Junctions in the band, the one facing least towards the player first.
+  const ring = nodes.map((n, i) => ({ i, d: Math.hypot(n.x - at.x, n.z - at.z), turn: Math.abs(Math.atan2(n.z - at.z, n.x - at.x) - spin) }))
+    .filter((n) => n.d >= NEAR && n.d <= FAR).sort((a, b) => a.turn - b.turn);
+  for (const car of only ? [only] : list || []) {
+    if (!car) continue;
+    const fromI = ring.length ? ring[rng.int(0, Math.min(4, ring.length - 1))].i : ringNode(nodes, at, spin);
+    const toI = nodes[fromI].neighbors[rng.int(0, nodes[fromI].neighbors.length - 1)];
+    const side = SIDES[rng.int(0, 1)];
+    board(car, nodes, fromI, toI, side, freeLane(nodes, fromI, toI, side, list || []));
+    Object.assign(car, { speed: T.speed, yield: 0, bumpT: 0, hp: CONFIG.car.hp, wrecked: false, taken: false, player: false });
   }
 }

@@ -1,212 +1,153 @@
-// WebAudio synthesis only: no files, no network, nothing to load.
-// The context opens on the first gesture; every call checks it first, so a
-// silent browser plays a silent game instead of throwing.
+// Solara Bay: all sound is synthesised with WebAudio. No files, no network.
 
-let ctx = null, master = null, noiseBuf = null, engine = null, sirenVoice = null;
-const CYCLE = 0.45;   // siren half period
+const SIREN = [659, 494], STEP = 0.45, START = 0.0001;
+let ctx, master, noise, engine, sirenOn = false, sirenReady = false, sirenHop = 0, phase = 0, vib = 0;
 
-function open() {
-  if (ctx) return ctx;
-  const AC = typeof window !== 'undefined' ? (window.AudioContext || window.webkitAudioContext) : null;
-  if (!AC) return null;
-  try {
-    ctx = new AC();
-    master = ctx.createGain();
-    master.gain.value = 0.25;
-    master.connect(ctx.destination);
-  } catch (err) {
-    ctx = master = null;
+const live = () => (ctx && master ? ctx : null);
+const later = (ms, fn) => window.setTimeout(fn, ms);
+const safe = (fn) => () => { try { fn(); } catch { /* audio is a garnish */ } };
+
+// One second of white noise, made once and reused by every burst.
+function noiseBuffer() {
+  if (!noise) {
+    noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    const data = noise.getChannelData(0);
+    for (let i = 0; i < data.length; i += 1) data[i] = Math.random() * 2 - 1;
   }
-  return ctx;
+  return noise;
 }
 
-/** Arm audio: first click or key opens the context. No music, ever. */
+// Opens the context on the first gesture; null if the browser has no audio.
 export function initSfx() {
-  if (typeof window === 'undefined') return null;
-  const wake = () => {
-    const live = open();
-    if (live && live.state === 'suspended') live.resume().catch(() => {});
-    window.removeEventListener('pointerdown', wake);
-    window.removeEventListener('keydown', wake);
-  };
-  window.addEventListener('pointerdown', wake);
-  window.addEventListener('keydown', wake);
-  return master;
-}
-
-// One plucked oscillator; optional glide.
-function tone(hz, dur, type, gain, slide, delay) {
-  if (!ctx) return;
-  const t0 = ctx.currentTime + (delay || 0), osc = ctx.createOscillator(), amp = ctx.createGain();
-  osc.type = type || 'sine';
-  osc.frequency.setValueAtTime(hz, t0);
-  if (slide) osc.frequency.exponentialRampToValueAtTime(slide, t0 + dur);
-  amp.gain.setValueAtTime(0.0001, t0);
-  amp.gain.exponentialRampToValueAtTime(gain, t0 + 0.015);
-  amp.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  osc.connect(amp).connect(master);
-  osc.start(t0);
-  osc.stop(t0 + dur + 0.02);
-}
-
-// Filtered noise burst: the body of shots, crashes and fires.
-function burst(dur, freq, gain, type) {
-  if (!ctx) return;
-  if (!noiseBuf) {
-    noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-    const d = noiseBuf.getChannelData(0);
-    for (let i = 0; i < d.length; i += 1) d[i] = Math.random() * 2 - 1;
+  try {
+    if (!ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = 0.25;
+      master.connect(ctx.destination);
+      noiseBuffer();
+    }
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    return ctx;
+  } catch {
+    ctx = null;
+    return null;
   }
-  const t0 = ctx.currentTime, src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), amp = ctx.createGain();
-  src.buffer = noiseBuf;
-  f.type = type || 'lowpass';
-  f.frequency.setValueAtTime(freq, t0);
-  amp.gain.setValueAtTime(gain, t0);
-  amp.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  src.connect(f).connect(amp).connect(master);
-  src.start(t0);
-  src.stop(t0 + dur + 0.02);
 }
 
-const RAW = {
-  // gunshot: noise crack under a 900 Hz blip
-  shot(rifle) {
-    burst(rifle ? 0.11 : 0.08, rifle ? 2600 : 1800, rifle ? 0.45 : 0.32);
-    tone(rifle ? 700 : 900, 0.06, 'square', 0.12, 220);
-  },
-  // two bells for cash and pickups
-  chime() {
-    tone(660, 0.12, 'sine', 0.3);
-    tone(880, 0.16, 'sine', 0.26, 0, 0.09);
-  },
-  // 60 Hz swell under a long noise decay
-  explode() {
-    tone(60, 0.6, 'sine', 0.55, 28);
-    burst(0.6, 900, 0.5);
-    burst(0.35, 3200, 0.22, 'highpass');
-  },
-  // metal thud, brighter with force
-  crash(force) {
-    const f = Math.max(0.2, Math.min(1, Number(force) || 0.6));
-    burst(0.12 + 0.1 * f, 500 + 700 * f, 0.28 * f + 0.08);
-    tone(90 + 40 * f, 0.1, 'triangle', 0.12);
-  },
-  honk() {
-    tone(440, 0.2, 'square', 0.14);
-    tone(554, 0.2, 'square', 0.09);
-  },
-  // story sting: up for a win, down for a loss
-  jingle(win) {
-    (win ? [523, 659, 784] : [392, 330, 262]).forEach((hz, i) => tone(hz, 0.18, 'triangle', 0.24, 0, i * 0.11));
-    if (win) tone(1568, 0.3, 'sine', 0.14, 0, 0.22);
-  },
-  dry() { burst(0.03, 2400, 0.16, 'highpass'); },
-  door() {
-    burst(0.09, 420, 0.22);
-    tone(120, 0.07, 'triangle', 0.1);
-  },
-  // two-tone wail while wanted
-  siren(on) {
-    const v = sirenVoice;
-    sirenVoice = null;
-    if (!on) {
-      if (!v || !ctx) return;
-      const t = ctx.currentTime;
-      v.gain.gain.cancelScheduledValues(t);
-      v.gain.gain.setValueAtTime(Math.max(0.0001, v.gain.gain.value), t);
-      v.gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
-      v.osc.stop(t + 0.18);
-      return;
-    }
-    if (v) {
-      sirenVoice = v;
-      return;
-    }
-    const osc = ctx.createOscillator(), gain = ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.value = 659;
-    gain.gain.value = 0.0001;
-    osc.connect(gain).connect(master);
-    gain.gain.linearRampToValueAtTime(0.07, ctx.currentTime + 0.15);
-    osc.start();
-    sirenVoice = { osc, gain, phase: 0 };
-  },
-  // a wounded engine coughing under the loop
-  engineSputter() {
-    if (!ctx || !engine) return;
-    const g = engine.gain.gain, t = ctx.currentTime;
-    g.cancelScheduledValues(t);
-    g.setValueAtTime(engine.level, t);
-    g.linearRampToValueAtTime(0.02, t + 0.05);
-    g.linearRampToValueAtTime(engine.level, t + 0.12);
-  },
+// An envelope that snaps to peak and decays to silence over `dur`.
+function envelope(peak, dur) {
+  const amp = ctx.createGain(), t = ctx.currentTime;
+  amp.gain.setValueAtTime(START, t);
+  amp.gain.exponentialRampToValueAtTime(peak, t + 0.008);
+  amp.gain.exponentialRampToValueAtTime(START, t + dur);
+  amp.connect(master);
+  return { amp, t };
+}
+
+// A short blip with an exponential tail, optionally sliding to another pitch.
+function tone(hz, dur, type, peak, slide) {
+  if (!live()) return;
+  const osc = ctx.createOscillator(), { amp, t } = envelope(peak, dur);
+  osc.type = type;
+  osc.frequency.setValueAtTime(hz, t);
+  if (slide) osc.frequency.exponentialRampToValueAtTime(slide, t + dur);
+  osc.connect(amp);
+  osc.start(t);
+  osc.stop(t + dur + 0.02);
+}
+
+// Filtered noise: a shot's crack, a crash's thud, an explosion's roar.
+function burst(dur, peak, cut) {
+  if (!live()) return;
+  const src = ctx.createBufferSource(), filter = ctx.createBiquadFilter(), { amp, t } = envelope(peak, dur);
+  src.buffer = noiseBuffer();
+  filter.type = 'lowpass';
+  filter.frequency.setValueAtTime(cut, t);
+  filter.frequency.exponentialRampToValueAtTime(cut * 0.25, t + dur);
+  src.connect(filter).connect(amp);
+  src.start(t, Math.random() * 0.4);
+  src.stop(t + dur + 0.02);
+}
+
+const note = (hz) => tone(hz, 0.16, 'triangle', 0.18);
+const notes = (list) => list.forEach((hz, i) => later(i * 130, () => note(hz)));
+
+export const S = {
+  shot: safe(() => { burst(0.08, 0.5, 4200); tone(900, 0.05, 'square', 0.16, 420); }),
+  chime: safe(() => { tone(660, 0.11, 'sine', 0.2); later(90, () => tone(880, 0.16, 'sine', 0.18)); }),
+  explode: safe(() => { tone(60, 0.5, 'sine', 0.5, 28); burst(0.6, 0.45, 1600); }),
+  crash: safe(() => { burst(0.14, 0.42, 900); tone(140, 0.09, 'triangle', 0.2, 70); }),
+  honk: safe(() => tone(440, 0.2, 'square', 0.14)),
+  jingle: (win) => safe(() => notes(win ? [523, 659, 784] : [415, 330, 262]))(),
 };
 
-/** Every effect, each call guarded: audio never breaks the game. */
-const S = Object.fromEntries(Object.entries(RAW).map(([k, fn]) => [k, (...a) => {
+// Sawtooth 50-120 Hz by speed through a lowpass, with a small vibrato.
+export function engineOn(kind) {
   try {
-    if (ctx || open()) fn(...a);
-  } catch (err) { /* silence */ }
-}]));
-
-/** Start the car voice: a sawtooth through a lowpass, quiet by default. */
-export function engineOn() {
-  engineOff();
-  if (!ctx && !open()) return;
-  const osc = ctx.createOscillator(), filter = ctx.createBiquadFilter(), gain = ctx.createGain();
-  const lfo = ctx.createOscillator(), wobble = ctx.createGain();
-  osc.type = 'sawtooth';
-  osc.frequency.value = 55;
-  filter.type = 'lowpass';
-  filter.frequency.value = 380;
-  filter.Q.value = 2.2;
-  gain.gain.value = 0.0001;
-  lfo.frequency.value = 18;
-  wobble.gain.value = 1.6;
-  lfo.connect(wobble).connect(osc.frequency);
-  osc.connect(filter).connect(gain).connect(master);
-  gain.gain.linearRampToValueAtTime(0.09, ctx.currentTime + 0.18);
-  osc.start();
-  lfo.start();
-  engine = { osc, filter, gain, lfo, level: 0.09 };
+    initSfx();
+    if (!live() || engine) return;
+    const osc = ctx.createOscillator(), filter = ctx.createBiquadFilter(), amp = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.value = 50;
+    filter.type = 'lowpass';
+    filter.frequency.value = 420;
+    amp.gain.value = START;
+    osc.connect(filter).connect(amp).connect(master);
+    osc.start();
+    engine = { osc, filter, amp };
+    amp.gain.setTargetAtTime(kind === 'sport' ? 0.06 : 0.045, ctx.currentTime, 0.1);
+  } catch { /* silence */ }
 }
 
-/** Tacho: 50 Hz at rest, 120 Hz flat out; brighter with speed. */
-export function engineUpdate(speed01) {
-  if (!engine) return;
-  const s = Math.max(0, Math.min(1, Number(speed01) || 0)), t = ctx.currentTime;
-  engine.osc.frequency.setTargetAtTime(50 + 70 * s, t, 0.08);
-  engine.filter.frequency.setTargetAtTime(320 + 900 * s, t, 0.1);
+// speed01 = 0..1 of top speed: the hum climbs, the vibrato rides on top.
+export function engineUpdate(speed01, dt) {
+  if (!engine || !live()) return;
+  try {
+    vib += dt || 0;
+    const speed = Math.max(0, Math.min(1, speed01 || 0)), t = ctx.currentTime;
+    engine.osc.frequency.setTargetAtTime(50 + 70 * speed + Math.sin(vib * 5.5) * 2.2, t, 0.08);
+    engine.filter.frequency.setTargetAtTime(320 + speed * 780, t, 0.12);
+  } catch { /* silence */ }
 }
 
 export function engineOff() {
-  const e = engine;
-  engine = null;
-  if (!e || !ctx) return;
-  const t = ctx.currentTime;
-  e.gain.gain.cancelScheduledValues(t);
-  e.gain.gain.setValueAtTime(Math.max(0.0001, e.gain.gain.value), t);
-  e.gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
-  e.osc.stop(t + 0.2);
-  e.lfo.stop(t + 0.2);
+  const old = engine;
+  if (!old || !live()) return;
+  try {
+    old.amp.gain.setTargetAtTime(START, ctx.currentTime, 0.08);
+    engine = null;
+    later(400, () => { try { old.osc.stop(); } catch { /* gone */ } });
+  } catch { engine = null; }
 }
 
-/** Convenience for the loop: feed the driven car straight in. */
-export function engineFromSpeed(car) {
-  if (!car) return;
-  engineUpdate(Math.min(1, Math.abs(car.speed || 0) / (car.kind === 'sport' || car.kind === 'police' ? 28 : 22)));
-  if (car.kind === 'police') S.siren(car.sirenOn !== false);
+// Two-tone siren at 659/494 Hz: starts on the call, then hops inside sirenTick,
+// which the main loop calls once per fixed step.
+const wail = () => {
+  if (live()) tone(SIREN[phase], STEP * 0.9, 'square', 0.05);
+  phase = 1 - phase;
+};
+
+export function siren(on) {
+  try {
+    sirenOn = !!on;
+    if (!sirenOn) {
+      sirenHop = 0;
+      phase = 0;
+    } else if (initSfx() && !sirenReady) {
+      sirenReady = true;
+      wail();
+    }
+  } catch { /* silence */ }
 }
 
-/** Alternate 659 / 494 Hz every half second; called once per frame. */
+// Keeps the two tones hopping; the gate that starts them lives in siren().
 export function sirenTick(dt) {
-  if (!sirenVoice) return;
-  sirenVoice.phase += Number(dt) || 0;
-  if (sirenVoice.phase >= CYCLE) {
-    sirenVoice.phase -= CYCLE;
-    const osc = sirenVoice.osc;
-    osc.frequency.setTargetAtTime(osc.frequency.value > 550 ? 494 : 659, ctx.currentTime, 0.02);
-  }
+  if (!sirenOn) return;
+  sirenHop += dt || 0;
+  if (sirenHop < STEP) return;
+  sirenHop -= STEP;
+  try { wail(); } catch { /* silence */ }
 }
-
-export { S };

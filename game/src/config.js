@@ -1,5 +1,4 @@
-// Every number that shapes Solara Bay lives here, so tuning never means
-// hunting through gameplay code.
+// Every tunable number for Solara Bay in one place. No Three.js here.
 
 export const CONFIG = {
   world: {
@@ -10,8 +9,6 @@ export const CONFIG = {
     sidewalk: 3,
     blockUsable: 68,
     parkRect: { minX: -74, maxX: -6, minZ: -74, maxZ: -6 },
-    fogNear: 160,
-    fogFar: 640,
   },
   player: {
     walk: 4.4,
@@ -19,7 +16,6 @@ export const CONFIG = {
     hp: 100,
     camDistFoot: 5.5,
     camHeight: 1.6,
-    radius: 0.55,
   },
   weapons: {
     pistol: { dmg: 34, rate: 3, spread: 0.012, infinite: true },
@@ -40,49 +36,37 @@ export const CONFIG = {
     speed: 9,
     laneOffset: 3.2,
     probeAhead: 6,
-    despawnDist: 130,
-    keepRadius: 90,
-    clearWait: 1.2,
   },
   peds: {
     count: 15,
     speed: 1.4,
     flee: 5.2,
     hp: 40,
-    sidewalkOffset: 1.5,
   },
   wanted: {
     decay: { 1: 30, 2: 60, 3: 60, 4: 60, 5: 60 },
-    unseenDist: 40,
-    theftOccupied: 1,
-    policeCar: 2,
-    hitPed: 2,
-    shootPed: 3,
-    killPed: 3,
-    killCop: 3,
+    starsFor: {
+      theftOccupied: 1,
+      policeCar: 2,
+      hitPed: 2,
+      shootPed: 3,
+      killPed: 3,
+      killCop: 3,
+      rampage: 1,
+    },
     rampageKills: 3,
     rampageWindow: 20,
   },
   police: {
-    counts: {
-      1: [1, 0],
-      2: [2, 1],
-      3: [3, 2],
-      4: [4, 3],
-      5: [5, 4],
-    },
-    foot: {
-      hp: 60,
-      run: 6.5,
-      dmgMin: 8,
-      dmgMax: 12,
-      fireEvery: 1.0,
-      range: 22,
-      arrestDist: 3.0,
-      arrestHpBelow: 25,
-    },
-    carChase: { ram: 6, dropDist: 260, spawnMin: 60, spawnMax: 80, lead: 3 },
-    roadblock: { minStars: 4, ahead: 60, every: 20 },
+    counts: { 1: [1, 0], 2: [2, 1], 3: [3, 2], 4: [4, 3], 5: [5, 4] },
+    foot: { hp: 60, run: 6.5, dmgMin: 8, dmgMax: 12, fireEvery: 1.0, range: 22, arrestDist: 3.0, arrestHpBelow: 25 },
+    carChase: { ram: 6, dropDist: 260 },
+    spawnMin: 60,
+    spawnMax: 80,
+    loseSightDist: 40,
+    seeDist: 12,
+    roadblockEvery: 20,
+    roadblockAhead: 60,
   },
   economy: {
     start: 200,
@@ -92,11 +76,13 @@ export const CONFIG = {
     medkit: 50,
     fareMin: 80,
     fareMax: 150,
+    farePickupDist: 4,
+    fareDestMin: 100,
+    fareDestMax: 300,
     hospitalFee: 100,
     bustedFee: 150,
     saveKey: 'solara-bay-save-v1',
     saveEvery: 10,
-    armorCap: 100,
   },
   missions: {
     m1: 500,
@@ -106,15 +92,12 @@ export const CONFIG = {
     m3DeliverySec: 120,
   },
   camera: {
+    distCar: 8.5,
+    heightCar: 3.2,
+    lerp: 0.18,
     pitchMin: -0.15,
     pitchMax: 1.1,
-    distCar: 9.0,
-    heightCar: 3.2,
-    lerp: 7.5,
-    sensitivity: 0.0022,
-  },
-  hud: {
-    minimapScale: 180 / 440,
+    sens: 0.0022,
   },
 };
 

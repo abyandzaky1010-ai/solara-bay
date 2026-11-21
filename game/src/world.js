@@ -1,421 +1,235 @@
-// The stage: renderer, sun, camera, collision and the street grid of Solara Bay.
-// world.js knows nothing about people or cars — it hands out surfaces to stand
-// on, walls to bump into, and a road graph to drive.
+// Solara Bay stage: renderer, sun, third-person camera, street grid, sea, AABB collision.
 
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { C, material } from './palette.js';
 
-const HW = CONFIG.world.half;       // 200 -> city spans x,z in [-200,200]
-const SEA_X = CONFIG.world.sea;     // -172 -> everything west of this is ocean
-const PITCH = CONFIG.world.pitch;   // 80 -> street lines at -160..160
-const ROAD_HW = CONFIG.world.roadHalf;
+const PITCH = CONFIG.world.pitch;
+const AXIS = 5;
+const HALF_ROAD = CONFIG.world.roadHalf;
 const WALK = CONFIG.world.sidewalk;
-const GRID_X = [-160, -80, 0, 80, 160];
-const GRID_Z = [-160, -80, 0, 80, 160];
-const COUNT = GRID_X.length;
+const LIMIT = CONFIG.world.half - 3;
+const SHORE = CONFIG.world.sea + 1.2;
+const STRIPE = material(C.roadline);
+const SQUARE = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
 
-// Grid node index: row-major over (x column, z row).
-export function id(ix, iz) {
-  return iz * COUNT + ix;
+// Lattice index on the 5x5 intersection grid.
+export const id = (ix, iz) => iz * AXIS + ix;
+
+function coord(i) {
+  return (i - 2) * PITCH;
 }
 
-// Nearest node coordinate on one axis.
-function nearestLine(v, grid) {
-  let best = grid[0];
-  for (let i = 1; i < grid.length; i += 1) {
-    if (Math.abs(grid[i] - v) < Math.abs(best - v)) best = grid[i];
-  }
-  return best;
+function axisIndex(v) {
+  const i = Math.round(v / PITCH) + 2;
+  return i >= 0 && i < AXIS && Math.abs(coord(i) - v) < 0.5 ? i : -1;
 }
 
-function flatMesh(w, d, hex, x, y, z, flat = false) {
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), material(hex, { flat }));
-  m.rotation.x = -Math.PI / 2;
-  m.position.set(x, y, z);
-  m.receiveShadow = true;
-  return m;
-}
-
-function roadGraph() {
+// Avenues at {-160,-80,0,80,160} on both axes.
+function buildGraph() {
   const nodes = [];
-  for (let iz = 0; iz < COUNT; iz += 1) {
-    for (let ix = 0; ix < COUNT; ix += 1) {
-      nodes.push({ x: GRID_X[ix], z: GRID_Z[iz], ix, iz, neighbors: [] });
-    }
-  }
-  for (let iz = 0; iz < COUNT; iz += 1) {
-    for (let ix = 0; ix < COUNT; ix += 1) {
-      const n = nodes[id(ix, iz)];
-      if (ix > 0) n.neighbors.push(id(ix - 1, iz));
-      if (ix < COUNT - 1) n.neighbors.push(id(ix + 1, iz));
-      if (iz > 0) n.neighbors.push(id(ix, iz - 1));
-      if (iz < COUNT - 1) n.neighbors.push(id(ix, iz + 1));
-    }
-  }
-  const roads = {
-    nodes,
-    size: COUNT,
-    pitch: PITCH,
-    links: nodes.reduce((sum, n) => sum + n.neighbors.length, 0) / 2,
-    // Axes sharing the node line at x,z (useful for AI lookups).
-    at(x, z) {
-      return { x: nearestLine(x, GRID_X), z: nearestLine(z, GRID_Z) };
-    },
-    nearest(x, z) {
-      let best = 0;
-      let bestD = Infinity;
-      for (let i = 0; i < nodes.length; i += 1) {
-        const dx = nodes[i].x - x;
-        const dz = nodes[i].z - z;
-        const d = dx * dx + dz * dz;
-        if (d < bestD) {
-          bestD = d;
-          best = i;
-        }
-      }
-      return best;
-    },
+  const links = [];
+  const join = (a, b) => {
+    nodes[a].neighbors.push(b);
+    nodes[b].neighbors.push(a);
+    links.push([a, b]);
   };
-  return roads;
-}
-
-// 1 m tile strip of the seaside promenade, drawn as one merged plane with a
-// second darker grid so it reads as paving from the camera.
-function promenadeTiles(scene) {
-  const width = SEA_X - -HW;
-  const cx = (-HW + SEA_X) / 2;
-  const walk = flatMesh(width, HW * 2, C.sidewalk, cx, 0.04, 0);
-  scene.add(walk);
-
-  const lineMat = material(0xb8ae9c, { flat: true });
-  const group = new THREE.Group();
-  for (let z = -HW; z <= HW; z += 4) {
-    const strip = new THREE.Mesh(new THREE.PlaneGeometry(width, 0.14), lineMat);
-    strip.rotation.x = -Math.PI / 2;
-    strip.position.set(cx, 0.055, z);
-    group.add(strip);
+  for (let iz = 0; iz < AXIS; iz += 1) {
+    for (let ix = 0; ix < AXIS; ix += 1) nodes.push({ x: coord(ix), z: coord(iz), io: [ix, iz], neighbors: [] });
   }
-  for (let x = -HW + 4; x < SEA_X; x += 4) {
-    const strip = new THREE.Mesh(new THREE.PlaneGeometry(0.14, HW * 2), lineMat);
-    strip.rotation.x = -Math.PI / 2;
-    strip.position.set(x, 0.055, 0);
-    group.add(strip);
-  }
-  scene.add(group);
-
-  // Low seawall between promenade and water.
-  const wall = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.0, HW * 2), material(0xc4b9a6));
-  wall.position.set(SEA_X + 0.4, 0.5, 0);
-  wall.receiveShadow = true;
-  wall.castShadow = true;
-  scene.add(wall);
-  return wall;
-}
-
-function sea(scene) {
-  const width = HW * 2;
-  const ocean = flatMesh(width, HW * 2, C.water, SEA_X - width / 2, 0.01, 0);
-  scene.add(ocean);
-  const foam = flatMesh(6, HW * 2, 0xd7f1f6, SEA_X - 3, 0.03, 0);
-  scene.add(foam);
-}
-
-function asphaltRoads(scene) {
-  const asphaltMat = material(C.asphalt);
-  const lineMat = material(C.roadline, { flat: true });
-  const walkMat = material(C.sidewalk);
-
-  // Full asphalt planes down every street line, both axes.
-  for (let i = 0; i < COUNT; i += 1) {
-    const along = GRID_X[i];
-    const across = GRID_Z[i];
-
-    const ns = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_HW * 2, HW * 2), asphaltMat);
-    ns.rotation.x = -Math.PI / 2;
-    ns.position.set(along, 0.02, 0);
-    ns.receiveShadow = true;
-    scene.add(ns);
-
-    const ew = new THREE.Mesh(new THREE.PlaneGeometry(HW * 2, ROAD_HW * 2), asphaltMat);
-    ew.rotation.x = -Math.PI / 2;
-    ew.position.set(0, 0.021, across);
-    ew.receiveShadow = true;
-    scene.add(ew);
-  }
-
-  // Dashed centre lines between intersections.
-  const dashGeo = new THREE.PlaneGeometry(3, 0.36);
-  const dashGeoV = new THREE.PlaneGeometry(0.36, 3);
-  const dashes = new THREE.Group();
-  for (let a = 0; a < COUNT; a += 1) {
-    for (let b = 0; b < COUNT - 1; b += 1) {
-      const a0 = GRID_X[b];
-      const a1 = GRID_X[b + 1];
-      const mid = (a0 + a1) / 2;
-      const span = a1 - a0 - (ROAD_HW + WALK) * 2;
-      const steps = Math.floor(span / 8);
-
-      for (let s = 0; s <= steps; s += 1) {
-        const offset = -span / 2 + s * 8;
-        const h = new THREE.Mesh(dashGeo, lineMat);
-        h.rotation.x = -Math.PI / 2;
-        h.position.set(mid + offset, 0.05, GRID_Z[a]);
-        dashes.add(h);
-
-        const v = new THREE.Mesh(dashGeoV, lineMat);
-        v.rotation.x = -Math.PI / 2;
-        v.position.set(GRID_X[a], 0.05, mid + offset);
-        dashes.add(v);
-      }
+  for (let iz = 0; iz < AXIS; iz += 1) {
+    for (let ix = 0; ix < AXIS; ix += 1) {
+      if (ix + 1 < AXIS) join(id(ix, iz), id(ix + 1, iz));
+      if (iz + 1 < AXIS) join(id(ix, iz), id(ix, iz + 1));
     }
   }
-  scene.add(dashes);
-
-  // Sidewalk aprons around each block, and crosswalk ticks at junctions.
-  const ticks = new THREE.Group();
-  for (let b = 0; b < COUNT - 1; b += 1) {
-    for (let c = 0; c < COUNT - 1; c += 1) {
-      const x0 = GRID_X[b] + ROAD_HW;
-      const x1 = GRID_X[b + 1] - ROAD_HW;
-      const z0 = GRID_Z[c] + ROAD_HW;
-      const z1 = GRID_Z[c + 1] - ROAD_HW;
-      const w = x1 - x0;
-      const d = z1 - z0;
-      const cx = (x0 + x1) / 2;
-      const cz = (z0 + z1) / 2;
-
-      const aprons = [
-        [cx, z0 + WALK / 2, w, WALK],
-        [cx, z1 - WALK / 2, w, WALK],
-        [x0 + WALK / 2, cz, WALK, d - WALK * 2],
-        [x1 - WALK / 2, cz, WALK, d - WALK * 2],
-      ];
-      for (const [ax, az, aw, ad] of aprons) {
-        const slab = new THREE.Mesh(new THREE.BoxGeometry(aw, 0.16, ad), walkMat);
-        slab.position.set(ax, 0.08, az);
-        slab.receiveShadow = true;
-        scene.add(slab);
-      }
-    }
-  }
-
-  // Crosswalk ticks: short bars laid across each road approach to a junction.
-  const tickGeo = new THREE.PlaneGeometry(0.5, 3.2);
-  for (let i = 0; i < COUNT; i += 1) {
-    for (let j = 0; j < COUNT; j += 1) {
-      const nx = GRID_X[i];
-      const nz = GRID_Z[j];
-      const gap = ROAD_HW + 2.2;
-      for (let k = -5; k <= 5; k += 1) {
-        const off = k * 1.05;
-        if (Math.abs(off) > ROAD_HW - 0.6) continue;
-        const north = new THREE.Mesh(tickGeo, lineMat);
-        north.rotation.x = -Math.PI / 2;
-        north.position.set(nx + off, 0.052, nz + gap);
-        ticks.add(north);
-        const south = north.clone();
-        south.position.z = nz - gap;
-        ticks.add(south);
-        const east = new THREE.Mesh(tickGeo, lineMat);
-        east.rotation.x = -Math.PI / 2;
-        east.rotation.z = Math.PI / 2;
-        east.position.set(nx + gap, 0.053, nz + off);
-        ticks.add(east);
-        const west = east.clone();
-        west.position.x = nx - gap;
-        ticks.add(west);
-      }
-    }
-  }
-  scene.add(ticks);
+  const at = (x, z) => {
+    const ix = axisIndex(x);
+    const iz = axisIndex(z);
+    return ix < 0 || iz < 0 ? null : nodes[id(ix, iz)];
+  };
+  return { nodes, links, at };
 }
 
-function sunRig(scene) {
-  const hemi = new THREE.HemisphereLight(0xb7dcff, 0xe0d2ae, 0.85);
-  scene.add(hemi);
+function rect(parent, hex, x, z, w, d, y, opts) {
+  const mesh = new THREE.Mesh(SQUARE, material(hex, opts));
+  mesh.scale.set(w, 1, d);
+  mesh.position.set(x, y, z);
+  mesh.receiveShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
 
-  const sun = new THREE.DirectionalLight(0xfff3d6, 1.35);
-  sun.position.set(120, 165, 90);
+function box(parent, hex, x, y, z, w, h, d) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material(hex));
+  mesh.position.set(x, y, z);
+  mesh.castShadow = mesh.receiveShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
+
+function buildLights(scene) {
+  const hemi = new THREE.HemisphereLight(C.sky, C.sand, 1.15);
+  const sun = new THREE.DirectionalLight(C.sun, 2.1);
+  sun.position.set(120, 180, 80);
   sun.target.position.set(0, 0, 0);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  const cam = sun.shadow.camera;
-  cam.left = -260;
-  cam.right = 260;
-  cam.top = 260;
-  cam.bottom = -260;
-  cam.near = 10;
-  cam.far = 520;
-  sun.shadow.bias = -0.0012;
-  sun.shadow.normalBias = 0.35;
-  scene.add(sun);
-  scene.add(sun.target);
+  const box = sun.shadow.camera;
+  Object.assign(box, { left: -260, right: 260, top: 260, bottom: -260, near: 1, far: 620 });
+  box.updateProjectionMatrix();
+  sun.shadow.bias = -0.0006;
+  sun.shadow.normalBias = 0.4;
+  scene.add(hemi, sun, sun.target);
+  return { hemi, sun };
+}
 
-  // A soft warm bounce so shaded walls keep some colour.
-  const bounce = new THREE.DirectionalLight(0xffe9c9, 0.25);
-  bounce.position.set(-110, 40, -80);
-  scene.add(bounce);
+function buildRenderer(canvas) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  return renderer;
+}
 
-  return { hemi, sun, bounce };
+// Sand, sea, promenade.
+function buildWaterfront(scene) {
+  const { half, sea: seaEdge } = CONFIG.world;
+  rect(scene, C.sand, 0, 0, half * 2 + 240, half * 2 + 240, -0.05).receiveShadow = true;
+  const sea = rect(scene, C.water, (-half + seaEdge) / 2, 0, seaEdge + half, half * 2 + 240, -0.28, { glassy: true });
+  sea.material.shininess = 90;
+  const startX = seaEdge + 1.5;
+  const width = half - startX;
+  for (let z = -half; z < half; z += 8) rect(scene, z % 16 === 0 ? C.sidewalk : C.sand, startX + width / 2, z + 4, width - 0.15, 7.85, 0.02);
+  box(scene, C.sidewalk, seaEdge + 0.3, 0.55, 0, 0.6, 1.1, half * 2);
+}
+
+// Asphalt, dashes, sidewalks, crosswalk paint.
+function buildStreets(scene, nodes) {
+  const span = CONFIG.world.half * 2;
+  const quad = (w, d) => new THREE.BoxGeometry(w, 0.08, d);
+  const dashNS = quad(0.32, 4);
+  const dashEW = quad(4, 0.32);
+  const barNS = quad(0.9, HALF_ROAD * 2 - 1);
+  const barEW = quad(HALF_ROAD * 2 - 1, 0.9);
+  const paint = (geo, x, z) => scene.add(new THREE.Mesh(geo, STRIPE).translateX(x).translateY(0.08).translateZ(z));
+  for (const node of nodes) {
+    rect(scene, C.asphalt, node.x, 0, HALF_ROAD * 2, span, 0.05);
+    rect(scene, C.asphalt, 0, node.z, span, HALF_ROAD * 2, 0.05);
+    for (let s = -span / 2 + 2; s < span / 2; s += 10) {
+      paint(dashNS, node.x, s);
+      paint(dashEW, s, node.z);
+    }
+    for (let i = 0; i < 3; i += 1) for (const s of [-1, 1]) {
+      paint(barNS, node.x + s * (HALF_ROAD + 1.4 + i * 1.6), node.z);
+      paint(barEW, node.x, node.z + s * (HALF_ROAD + 1.4 + i * 1.6));
+    }
+    for (const side of [-1, 1]) {
+      rect(scene, C.sidewalk, node.x + side * (HALF_ROAD + WALK / 2), 0, WALK, span, 0.12);
+      rect(scene, C.sidewalk, 0, node.z + side * (HALF_ROAD + WALK / 2), span, WALK, 0.12);
+    }
+  }
 }
 
 export function initWorld(canvas) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
-  renderer.setSize(window.innerWidth, window.innerHeight, false);
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.setClearColor(C.sky, 1);
-
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(C.sky);
-  scene.fog = new THREE.Fog(C.sky, CONFIG.world.fogNear, CONFIG.world.fogFar);
-
-  const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1200);
-  camera.position.set(10, 14, 90);
-  camera.lookAt(-20, 4, 0);
-
-  const W = {
-    scene,
-    camera,
-    renderer,
-    colliders: [],
-    roads: roadGraph(),
-    half: HW,
-    lights: sunRig(scene),
-    cam: { yaw: Math.PI, pitch: 0.34, dist: CONFIG.player.camDistFoot },
-    time: 0,
-  };
-
-  // Sand ground beneath everything, then the layered city surfaces.
-  const ground = flatMesh(HW * 2, HW * 2, C.sand, 0, 0, 0);
-  scene.add(ground);
-
-  sea(scene);
-  asphaltRoads(scene);
-  promenadeTiles(scene);
-
-  const onResize = () => {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    camera.aspect = w / Math.max(1, h);
+  scene.fog = new THREE.Fog(C.sky, 160, 640);
+  const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.4, 900);
+  const W = { scene, camera, half: CONFIG.world.half, colliders: [], roads: buildGraph(), yaw: Math.PI * 0.15, pitch: 0.34, zoom: 1 };
+  Object.assign(W, { renderer: buildRenderer(canvas), lights: buildLights(scene), camPos: new THREE.Vector3(30, 46, 120), lookAt: new THREE.Vector3(0, 1, 0) });
+  camera.position.copy(W.camPos);
+  camera.lookAt(W.lookAt);
+  buildWaterfront(scene);
+  buildStreets(scene, W.roads.nodes);
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
-    renderer.setSize(w, h, false);
-  };
-  window.addEventListener('resize', onResize);
-
+    W.renderer.setSize(window.innerWidth, window.innerHeight);
+  });
   return W;
 }
 
+// Solid box {minX,maxX,minZ,maxZ,h}.
 export function addCollider(W, x, z, w, d, h) {
-  const box = {
-    minX: x - w / 2,
-    maxX: x + w / 2,
-    minZ: z - d / 2,
-    maxZ: z + d / 2,
-    h: h || 10,
-  };
-  W.colliders.push(box);
-  return box;
+  const c = { minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, h: h || 0 };
+  W.colliders.push(c);
+  return c;
 }
 
-// Circle-vs-AABB push-out. Move on each axis, resolve the overlap on whichever
-// face is nearest, and report whether anything blocked.
+// Shortest way out of one box for a circle, as a face normal plus the moved point.
+function escape(px, pz, r, b) {
+  const out = [[b.minX - r - px, -1, 0], [b.maxX + r - px, 1, 0], [b.minZ - r - pz, 0, -1], [b.maxZ + r - pz, 0, 1]];
+  let pick = out[0];
+  for (const o of out) if (Math.abs(o[0]) < Math.abs(pick[0])) pick = o;
+  return { x: px + pick[0] * Math.abs(pick[1]), z: pz + pick[0] * Math.abs(pick[2]), nx: pick[1], nz: pick[2] };
+}
+
+// Sweep a circle by (dx,dz), sliding along faces.
 export function resolveMove(W, px, pz, r, dx, dz) {
   let x = px + dx;
   let z = pz + dz;
   let hit = false;
-  const boxes = W.colliders;
-
+  let nx = 0;
+  let nz = 0;
   for (let pass = 0; pass < 2; pass += 1) {
-    let moved = false;
-    for (let i = 0; i < boxes.length; i += 1) {
-      const b = boxes[i];
-      if (x + r <= b.minX || x - r >= b.maxX || z + r <= b.minZ || z - r >= b.maxZ) continue;
-      moved = true;
+    for (const b of W.colliders) {
+      if (x + r < b.minX || x - r > b.maxX || z + r < b.minZ || z - r > b.maxZ) continue;
+      const out = escape(x, z, r + 0.02, b);
+      x = out.x;
+      z = out.z;
+      nx = out.nx;
+      nz = out.nz;
       hit = true;
-
-      const toLeft = x - b.minX;
-      const toRight = b.maxX - x;
-      const toBack = z - b.minZ;
-      const toFront = b.maxZ - z;
-      const min = Math.min(toLeft, toRight, toBack, toFront);
-
-      // Slide along the shallowest axis: only the small penetration is removed.
-      if (min === toLeft) x = b.minX - r;
-      else if (min === toRight) x = b.maxX + r;
-      else if (min === toBack) z = b.minZ - r;
-      else z = b.maxZ + r;
     }
-    if (!moved) break;
   }
-
-  const lim = HW - 4;
-  if (x > lim) { x = lim; hit = true; }
-  if (x < SEA_X + 2) { x = SEA_X + 2; hit = true; }
-  if (z > lim) { z = lim; hit = true; }
-  if (z < -lim) { z = -lim; hit = true; }
-
-  return { x, z, hit };
+  if (x < SHORE + r || x > LIMIT) { nx = x < SHORE + r ? 1 : -1; x = x < SHORE + r ? SHORE + r : LIMIT; hit = true; }
+  if (z < -LIMIT || z > LIMIT) { nz = z < -LIMIT ? 1 : -1; z = z < -LIMIT ? -LIMIT : LIMIT; hit = true; }
+  return { x, z, hit, nx, nz };
 }
 
-// True when a point sits on asphalt: within roadHalf of any street line and
-// not inside a block apron.
+// Is this point on asphalt?
 export function isOnRoad(W, x, z) {
-  const nx = nearestLine(x, GRID_X);
-  const nz = nearestLine(z, GRID_Z);
-  const onX = Math.abs(x - nx) <= ROAD_HW;
-  const onZ = Math.abs(z - nz) <= ROAD_HW;
-  return onX || onZ;
-}
-
-// Snap a point onto the nearest road centre line, for spawning cars and picks.
-export function snapToLane(W, x, z) {
-  const nx = nearestLine(x, GRID_X);
-  const nz = nearestLine(z, GRID_Z);
-  if (Math.abs(x - nx) <= Math.abs(z - nz)) return { x: nx, z };
-  return { x, z: nz };
-}
-
-export function updateCamera(W, I, focus, dt) {
-  const cam = W.cam;
-  const body = CONFIG.player;
-  const view = CONFIG.camera;
-  const car = focus && focus.kind && !focus.onFoot;
-
-  if (I && I.mouse) {
-    const m = I.mouse();
-    cam.yaw -= (m.dx || 0) * view.sensitivity;
-    cam.pitch += (m.dy || 0) * view.sensitivity;
+  for (const node of W.roads.nodes) {
+    if (Math.abs(x - node.x) <= HALF_ROAD || Math.abs(z - node.z) <= HALF_ROAD) return true;
   }
-  if (cam.yaw > Math.PI * 4 || cam.yaw < -Math.PI * 4) cam.yaw %= Math.PI * 2;
-  cam.pitch = Math.max(view.pitchMin, Math.min(view.pitchMax, cam.pitch));
+  return false;
+}
 
-  const wantDist = car ? view.distCar : body.camDistFoot;
-  const lift = car ? view.heightCar : body.camHeight;
-  cam.dist += (wantDist - cam.dist) * Math.min(1, dt * 4);
+// Nearest road centre line {x,z,axis,dist}.
+export function snapToLane(W, x, z) {
+  let best = { x: 0, z: 0, axis: 'z', dist: Infinity };
+  for (const node of W.roads.nodes) {
+    if (Math.abs(x - node.x) < best.dist) best = { x: node.x, z, axis: 'z', dist: Math.abs(x - node.x) };
+    if (Math.abs(z - node.z) < best.dist) best = { x, z: node.z, axis: 'x', dist: Math.abs(z - node.z) };
+  }
+  return best;
+}
 
-  const cosP = Math.cos(cam.pitch);
-  const sinP = Math.sin(cam.pitch);
-  const targetX = focus.x;
-  const targetY = (typeof focus.y === 'number' ? focus.y : 0) + lift * 0.55;
-  const targetZ = focus.z;
-
-  const backX = Math.sin(cam.yaw) * cosP * cam.dist;
-  const backZ = Math.cos(cam.yaw) * cosP * cam.dist;
-  const rise = sinP * cam.dist + lift * 0.5;
-
-  const cam3 = W.camera;
-  const k = Math.min(1, dt * view.lerp);
-  cam3.position.x += (targetX + backX - cam3.position.x) * k;
-  cam3.position.y += (targetY + rise - cam3.position.y) * k;
-  cam3.position.z += (targetZ + backZ - cam3.position.z) * k;
-
-  // Never let the lens dip under the pavement.
-  if (cam3.position.y < 0.9) cam3.position.y = 0.9;
-  cam3.lookAt(targetX, targetY, targetZ);
+// Third person orbit, pitch clamped.
+export function updateCamera(W, I, focus, dt) {
+  const cam = CONFIG.camera;
+  const mouse = I ? I.mouse() : { dx: 0, dy: 0, wheel: 0 };
+  W.yaw -= mouse.dx * cam.sens;
+  W.pitch = Math.max(cam.pitchMin, Math.min(cam.pitchMax, W.pitch + mouse.dy * cam.sens));
+  W.zoom = Math.max(0.7, Math.min(1.6, W.zoom + (mouse.wheel || 0) * 0.08));
+  const dist = (focus.dist || cam.distCar) * W.zoom;
+  const flat = Math.cos(W.pitch) * dist;
+  const k = 1 - Math.pow(1 - cam.lerp, Math.max(1, dt * 60));
+  const tx = focus.x - Math.sin(W.yaw) * flat;
+  const tz = focus.z - Math.cos(W.yaw) * flat;
+  const ty = (focus.height || cam.heightCar) + Math.sin(W.pitch) * dist;
+  W.camPos.x += (tx - W.camPos.x) * k;
+  W.camPos.y = Math.max(1.2, W.camPos.y + (ty - W.camPos.y) * k);
+  W.camPos.z += (tz - W.camPos.z) * k;
+  W.lookAt.x += (focus.x - W.lookAt.x) * k;
+  W.lookAt.y += ((focus.y === undefined ? 1.6 : focus.y) - W.lookAt.y) * k;
+  W.lookAt.z += (focus.z - W.lookAt.z) * k;
+  W.camera.position.copy(W.camPos);
+  W.camera.lookAt(W.lookAt);
 }
 
 export function renderFrame(W) {
