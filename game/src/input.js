@@ -1,99 +1,86 @@
-// Keyboard, mouse and pointer-lock state for one frame at a time. Plain DOM, no Three.js.
+// Solara Bay — keyboard, mouse and pointer-lock input, read once per frame.
 
 const GAME_KEYS = new Set([
-  'KeyW', 'KeyA', 'KeyS', 'KeyD',
-  'KeyE', 'KeyF', 'KeyR', 'KeyT', 'KeyQ',
-  'ShiftLeft', 'ShiftRight',
-  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-  'Space', 'Tab',
+  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyF', 'KeyR', 'KeyT',
+  'ShiftLeft', 'ShiftRight', 'Space', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 
 export function createInput(canvas) {
   const keys = new Set();
   const pressed = new Set();
-  let dx = 0;
-  let dy = 0;
-  let wheel = 0;
-
-  function onKeyDown(event) {
-    if (GAME_KEYS.has(event.code)) event.preventDefault();
-    if (event.repeat) return;
-    keys.add(event.code);
-    pressed.add(event.code);
-  }
-
-  function onKeyUp(event) {
-    if (GAME_KEYS.has(event.code)) event.preventDefault();
-    keys.delete(event.code);
-  }
-
-  function onMouseMove(event) {
-    if (!I.locked) return;
-    dx += event.movementX || 0;
-    dy += event.movementY || 0;
-  }
-
-  function onWheel(event) {
-    if (!I.locked) return;
-    event.preventDefault();
-    wheel += Math.sign(event.deltaY);
-  }
-
-  function onPointerLockChange() {
-    I.locked = document.pointerLockElement === canvas;
-    if (!I.locked) {
-      keys.clear();
-      pressed.clear();
-    }
-  }
-
-  function onBlur() {
-    keys.clear();
-    pressed.clear();
-  }
-
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
-  window.addEventListener('mousemove', onMouseMove);
-  window.addEventListener('wheel', onWheel, { passive: false });
-  window.addEventListener('blur', onBlur);
-  document.addEventListener('pointerlockchange', onPointerLockChange);
+  const mouseState = { dx: 0, dy: 0, wheel: 0 };
 
   const I = {
     keys,
     locked: false,
-
-    down(code) {
-      return keys.has(code);
-    },
-
+    down: (code) => keys.has(code),
     wasPressed(code) {
       if (!pressed.has(code)) return false;
       pressed.delete(code);
       return true;
     },
-
-    mouse() {
-      return { dx, dy, wheel };
-    },
-
+    mouse: () => ({ dx: mouseState.dx, dy: mouseState.dy, wheel: mouseState.wheel }),
     lock() {
-      if (I.locked) return;
-      const request = canvas.requestPointerLock?.();
-      if (request && typeof request.catch === 'function') request.catch(() => {});
+      if (!canvas || !canvas.requestPointerLock) return;
+      if (document.pointerLockElement !== canvas) {
+        const attempt = canvas.requestPointerLock();
+        if (attempt && typeof attempt.catch === 'function') attempt.catch(() => {});
+      }
     },
-
-    unlock() {
-      if (document.pointerLockElement === canvas) document.exitPointerLock();
-    },
-
     endFrame() {
-      dx = 0;
-      dy = 0;
-      wheel = 0;
+      mouseState.dx = 0;
+      mouseState.dy = 0;
+      mouseState.wheel = 0;
       pressed.clear();
     },
   };
+
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat) {
+      if (GAME_KEYS.has(e.code)) e.preventDefault();
+      return;
+    }
+    keys.add(e.code);
+    pressed.add(e.code);
+    if (GAME_KEYS.has(e.code)) e.preventDefault();
+  });
+
+  window.addEventListener('keyup', (e) => {
+    keys.delete(e.code);
+    if (GAME_KEYS.has(e.code)) e.preventDefault();
+  });
+
+  window.addEventListener('blur', () => {
+    keys.clear();
+    pressed.clear();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!I.locked) return;
+    mouseState.dx = (mouseState.dx || 0) + (e.movementX || 0);
+    mouseState.dy = (mouseState.dy || 0) + (e.movementY || 0);
+  });
+
+  window.addEventListener(
+    'wheel',
+    (e) => {
+      mouseState.wheel += Math.sign(e.deltaY);
+      if (I.locked) e.preventDefault();
+    },
+    { passive: false },
+  );
+
+  document.addEventListener('pointerlockchange', () => {
+    I.locked = document.pointerLockElement === canvas;
+  });
+
+  document.addEventListener('mousedown', () => {
+    if (I.locked) pressed.add('Mouse0');
+  });
+
+  window.addEventListener('contextmenu', (e) => {
+    if (I.locked) e.preventDefault();
+  });
 
   return I;
 }

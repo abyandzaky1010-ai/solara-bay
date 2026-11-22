@@ -1,242 +1,296 @@
-// Solara Bay: every HUD element, the toasts, the panel switches and the 180 px minimap.
+// Solara Bay — the glass over the city: bars, stars, wallet, objective, toasts,
+// the panels, and the corner map that tells you where to drive.
 
 import { CONFIG } from './config.js';
-import { fareMarker } from './economy.js';
+import { C } from './palette.js';
 
-const MAP = 180, SCALE = MAP / 440, RIM = 6, BLOCK = 68;
-const DIRS = [-160, -80, 0, 80, 160], PANELS = ['title', 'pause', 'shop', 'complete', 'busted', 'wasted'];
-const PALE = '#eef3ee', TAN = '#d8cfbf', WATER = '#5fb3c8', DARK = '#3a3f46', GRASS = '#7cc06a';
-const GOLD = '#ffd24a', COP = '#ff3b30', CIV = '#fff', PARKED = '#4f8cff', PLAYER = '#ff8a6b';
+const W = CONFIG.world;
+const HALF = W.half;
+const SEA = W.sea;
+const MINI = 180; // canvas px, square
+const SPAN = 440; // m across the sheet: the 400 m town plus margin
+const SCALE = MINI / SPAN;
+const TOAST_MS = 2500;
+const TOAST_MAX = 3;
+const GRID = [-160, -80, 0, 80, 160];
+const PANELS = ['title', 'pause', 'shop', 'complete', 'busted', 'wasted'];
 
-const sx = (x) => (x + 220) * SCALE;
-const sz = (z) => (z + 220) * SCALE;
-const byId = (id) => document.getElementById(id);
+const clock = (s) => `${String(Math.floor(Math.max(0, s) / 60)).padStart(2, '0')}:${String(Math.max(0, s) % 60).padStart(2, '0')}`;
 
+// Every HUD node once, plus a cache so text is only written when it changes.
 export function createHUD() {
+  const id = (x) => document.getElementById(x);
   const H = {
-    hud: byId('hud'), stars: byId('stars'), money: byId('money'), objective: byId('objective'), timer: byId('timer'),
-    toasts: byId('toasts'), minimap: byId('minimap'), crosshair: byId('crosshair'), weapon: byId('weapon'), speed: byId('speed'),
-    health: byId('healthbar')?.firstElementChild || null, armor: byId('armorbar')?.firstElementChild || null,
-    panels: Object.fromEntries(PANELS.map((id) => [id, byId(id)])),
-    banner: '', bannerT: 0, shownMoney: -1, lastStars: 0, pulseT: 0, frame: 0, starCache: '',
+    hud: id('hud'),
+    stars: id('stars'),
+    money: id('money'),
+    health: id('healthbar')?.querySelector('i'),
+    armor: id('armorbar')?.querySelector('i'),
+    weapon: id('weapon'),
+    speed: id('speed'),
+    objective: id('objective'),
+    timer: id('timer'),
+    toasts: id('toasts'),
+    minimap: id('minimap'),
+    crosshair: id('crosshair'),
+    banner: id('banner'),
+    panels: {},
+    stars_live: [],
+    toastsLive: [],
+    frame: 0,
+    c: { money: '', stars: -1, hp: -1, armor: -1, objective: '', timer: '' },
+    pulse: 0,
+    bannerT: 0,
+    mapStatic: null,
   };
-  H.map = H.minimap?.getContext('2d') || null;
+  // Five glyphs once; a class does the colouring.
+  for (let i = 0; H.stars && i < 5; i += 1) {
+    const el = document.createElement('span');
+    el.textContent = '\u2605';
+    H.stars.appendChild(el);
+    H.stars_live.push(el);
+  }
+  for (const key of PANELS) if (id(key)) H.panels[key] = id(key);
+  if (H.minimap) {
+    H.mapCtx = H.minimap.getContext('2d');
+    H.mapStatic = prerenderGround();
+  }
+  H.toast = (txt) => toast(H, txt);
   return H;
 }
 
-// Filled stars glow gold, empty ones are dim; a gain pulses the row.
-function paintStars(H, stars) {
-  if (!H.stars) return;
-  if (stars > H.lastStars) H.pulseT = 0.5;
-  H.lastStars = stars;
-  if (H.starCache === String(stars)) return;
-  H.starCache = String(stars);
-  H.stars.textContent = '\u2605'.repeat(stars) + '\u2606'.repeat(5 - stars);
-  H.stars.style.color = stars ? GOLD : 'rgba(255,255,255,0.35)';
-}
-
-const totable = (sec) => {
-  const s = Math.max(0, Math.round(sec));
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+// Text and bar writers that skip the DOM when nothing changed.
+const text = (el, value, c, k) => el && el.dataset.v !== value && ((el.dataset.v = value), (el.textContent = value), (c[k] = value));
+const bar = (el, pct, c, k) => {
+  const v = Math.max(0, Math.min(100, Math.round(pct)));
+  if (el && c[k] !== v) el.style.width = `${(c[k] = v)}%`;
 };
 
-const lineFor = (o) => [o.title, o.text, o.dist ? `${Math.round(o.dist)} m` : ''].filter(Boolean).join(' \u2014 ');
+// ------------------------------------------------------------------ the frame
 
+/** Bars, wallet, stars, gun, speed, the job line and the clocks. */
 export function updateHUD(H, G, dt) {
   if (!H || !G) return;
-  const P = G.P || {}, E = G.E || {};
+  const P = G.P || {};
+  const E = G.E || {};
+  const car = G.inCar;
+  const step = dt || 0;
 
-  // Money rolls up to the real balance instead of snapping.
-  const target = Math.max(0, Math.round(E.money || 0));
-  if (H.shownMoney < 0) H.shownMoney = target;
-  if (H.shownMoney !== target) {
-    const step = Math.max(1, Math.ceil(Math.abs(target - H.shownMoney) * Math.min(1, dt * 9)));
-    H.shownMoney = Math.abs(target - H.shownMoney) <= step ? target : H.shownMoney + Math.sign(target - H.shownMoney) * step;
-  }
+  // Wallet: the roll lives in economy.
   if (H.money) {
-    H.money.textContent = `$${H.shownMoney}`;
-    H.money.classList.toggle('roll', H.shownMoney !== target);
+    E.rollMoney?.(step);
+    text(H.money, E.formatMoney ? E.formatMoney(E) : `$${Math.round(E.money || 0)}`, H.c, 'money');
   }
 
-  paintStars(H, G.PO?.stars || 0);
-  if (H.pulseT > 0) {
-    H.pulseT = Math.max(0, H.pulseT - dt);
-    H.stars?.classList.toggle('pulse', H.pulseT > 0);
+  // Stars, with a short pulse on a gain.
+  const stars = Math.max(0, Math.min(5, G.PO?.stars | 0));
+  if (H.c.stars !== stars) {
+    if (stars > H.c.stars) H.pulse = 0.42;
+    H.c.stars = stars;
+    H.stars_live.forEach((el, i) => el.classList.toggle('on', i < stars));
   }
+  if (H.pulse > 0 && (H.pulse -= step) <= 0) H.stars?.classList.remove('pulse');
+  else if (H.pulse > 0) H.stars?.classList.add('pulse');
 
-  // Vitals bars, as widths on the inner <i>.
-  if (H.health) H.health.style.width = `${Math.max(0, Math.min(100, ((P.hp ?? 0) / CONFIG.player.hp) * 100))}%`;
-  if (H.armor) H.armor.style.width = `${Math.max(0, Math.min(100, (P.armor ?? 0)))}%`;
-  if (H.weapon) H.weapon.textContent = P.rifle && P.ammo > 0 ? `Rifle \u00b7 ${P.ammo}` : 'Pistol \u00b7 \u221e';
+  bar(H.health, ((P.hp ?? 100) / CONFIG.player.hp) * 100, H.c, 'hp');
+  bar(H.armor, ((P.armor ?? 0) / 100) * 100, H.c, 'armor');
 
-  const driving = !!G.inCar && !G.inCar.wrecked;
+  // Gun and rounds.
+  const rifle = P.rifle && (P.ammo | 0) > 0;
+  text(H.weapon, rifle ? `Rifle · ${P.ammo | 0}` : 'Pistol', H.c, 'weapon');
+
   if (H.speed) {
-    H.speed.classList.toggle('off', !driving);
-    if (driving) H.speed.textContent = `${Math.round(Math.abs(G.inCar.speed) * 3.6)} km/h`;
+    const on = !!car && !car.wrecked;
+    H.speed.classList.toggle('empty', !on);
+    if (on) text(H.speed, `${Math.round(Math.abs(car.speed || 0) * 3.6)} km/h`, H.c, 'speed');
+  }
+  H.crosshair?.classList.toggle('empty', !!car || !!P.dead);
+
+  // Job line and clock, banner, toasts.
+  const O = G.objective;
+  if (O) {
+    const reach = O.dist > 0 ? ` · ${O.dist} m` : '';
+    const line = `<b>${O.title || 'Job'}</b> — ${O.text || ''}${reach}`;
+    H.objective?.classList.remove('empty');
+    if (H.objective && H.c.objective !== line) {
+      H.c.objective = line;
+      H.objective.innerHTML = line;
+    }
+    if (H.timer) {
+      H.timer.classList.toggle('empty', !(O.timer > 0));
+      if (O.timer > 0) text(H.timer, clock(O.timer), H.c, 'timer');
+    }
+  } else {
+    H.objective?.classList.add('empty');
+    H.timer?.classList.add('empty');
+    H.c.objective = '';
   }
 
-  // Objective line, or a banner standing in for it for a moment.
-  const obj = G.objective;
-  const text = H.bannerT > 0 ? H.banner : obj ? lineFor(obj) : '';
-  if (H.objective && H.objective.textContent !== text) H.objective.textContent = text;
-  if (H.bannerT > 0) H.bannerT = Math.max(0, H.bannerT - dt * 1000);
-  const timerText = obj?.timer ? totable(obj.timer) : '';
-  if (H.timer && H.timer.textContent !== timerText) H.timer.textContent = timerText;
-
-  H.crosshair?.classList.toggle('hide', G.screen !== 'play' || driving);
-  H.hud?.classList.toggle('hidden', G.screen === 'title');
-  H.frame += 1;
+  if (H.bannerT > 0 && (H.bannerT -= step) <= 0) setBanner(H, '', 0);
+  for (let i = H.toastsLive.length - 1; i >= 0; i -= 1) {
+    const row = H.toastsLive[i];
+    const left = TOAST_MS / 1000 - (row.t += step);
+    if (left <= 0) row.el.remove(), H.toastsLive.splice(i, 1);
+    else if (left < 0.5) row.el.style.opacity = String(left / 0.5);
+  }
 }
 
-// Stack of three; the oldest leaves, all fade at 2.5 s.
+// ------------------------------------------------------------------ words
+
+/** One line, stacked last, oldest falling off the top when the stack is full. */
 export function toast(H, txt) {
   if (!H?.toasts || !txt) return;
   const el = document.createElement('div');
   el.className = 'toast';
   el.textContent = txt;
   H.toasts.appendChild(el);
-  while (H.toasts.childElementCount > 3) H.toasts.removeChild(H.toasts.firstElementChild);
-  window.setTimeout(() => {
-    el.style.transition = 'opacity 0.35s linear';
-    el.style.opacity = '0';
-    window.setTimeout(() => el.remove(), 380);
-  }, 2500);
+  H.toastsLive.push({ el, t: 0 });
+  while (H.toastsLive.length > TOAST_MAX) H.toastsLive.shift().el.remove();
 }
 
-export function setBanner(H, txt, ms) {
-  if (!H) return;
-  H.banner = txt || '';
-  H.bannerT = Math.max(400, ms || 3200);
+/** A big centred word: MISSION COMPLETE, WASTED, five stars. */
+export function setBanner(H, txt, ms = 2200) {
+  if (!H?.banner) return;
+  H.banner.textContent = txt || '';
+  H.banner.classList.toggle('show', !!txt);
+  H.bannerT = txt ? ms / 1000 : 0;
 }
+
+// ------------------------------------------------------------------ panels
 
 export function showPanel(H, id) {
   if (!H) return;
-  hidePanels(H);
-  H.panels[id]?.classList.remove('hide');
+  for (const key of PANELS) H.panels[key]?.classList.toggle('hidden', key !== id);
+  H.hud?.classList.toggle('hidden', ['title', 'busted', 'wasted'].includes(id));
 }
 
 export function hidePanels(H) {
   if (!H) return;
-  for (const id of PANELS) H.panels[id]?.classList.add('hide');
+  for (const key of PANELS) H.panels[key]?.classList.add('hidden');
+  H.hud?.classList.remove('hidden');
 }
 
-// ---- Minimap -------------------------------------------------------------
+// ------------------------------------------------------------------ the minimap
 
-function edgeClamp(px, py, pad) {
-  const mid = MAP / 2, dx = px - mid, dy = py - mid, reach = Math.max(Math.abs(dx), Math.abs(dy)), limit = mid - pad;
-  return reach <= limit ? { x: px, y: py } : { x: mid + (dx / reach) * limit, y: mid + (dy / reach) * limit };
+const px = (x) => (x + SPAN / 2) * SCALE;
+const py = (z) => (z + SPAN / 2) * SCALE;
+
+// The city never moves: ground, blocks, park and avenues are painted once.
+function prerenderGround() {
+  if (typeof document === 'undefined') return null;
+  const off = document.createElement('canvas');
+  off.width = off.height = MINI;
+  const g = off.getContext('2d');
+  const P = W.parkRect;
+  g.fillStyle = '#7fc6d8';
+  g.fillRect(0, 0, px(SEA), MINI);
+  g.fillStyle = '#cfe6d8';
+  g.fillRect(px(SEA), 0, MINI - px(SEA), MINI);
+  g.fillStyle = '#e8eee4';
+  for (let i = 0; i < 4; i += 1) {
+    for (let j = 0; j < 4; j += 1) g.fillRect(px(GRID[i] + W.roadHalf), py(GRID[j] + W.roadHalf), (W.pitch - 2 * W.roadHalf) * SCALE, (W.pitch - 2 * W.roadHalf) * SCALE);
+  }
+  g.fillStyle = '#8fd07a';
+  g.fillRect(px(P.minX), py(P.minZ), (P.maxX - P.minX) * SCALE, (P.maxZ - P.minZ) * SCALE);
+  g.fillStyle = '#96a3ae';
+  for (const s of GRID) {
+    g.fillRect(px(s) - W.roadHalf * SCALE, py(-HALF), 2 * W.roadHalf * SCALE, HALF * 2 * SCALE);
+    g.fillRect(px(-HALF), py(s) - W.roadHalf * SCALE, HALF * 2 * SCALE, 2 * W.roadHalf * SCALE);
+  }
+  return off;
 }
 
-function stamp(ctx, place, letter, ink) {
-  if (!place || !place.x) return;
-  const x = sx(place.x), y = sz(place.z);
-  ctx.fillStyle = 'rgba(20,28,34,0.82)';
-  ctx.beginPath();
-  ctx.arc(x, y, 5.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = ink;
-  ctx.font = 'bold 8px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(letter, x, y + 0.5);
+// A gold diamond, clamped to the rim when its target is off the sheet.
+function diamond(g, x, z, hex, r = 6) {
+  const cx = Math.max(r + 3, Math.min(MINI - r - 3, px(x)));
+  const cy = Math.max(r + 3, Math.min(MINI - r - 3, py(z)));
+  g.beginPath();
+  g.moveTo(cx, cy - r);
+  g.lineTo(cx + r, cy);
+  g.lineTo(cx, cy + r);
+  g.lineTo(cx - r, cy);
+  g.closePath();
+  g.fillStyle = hex;
+  g.fill();
 }
 
-/** 180 px of city around the player: sea, grid, park, blocks, blips, stamps. */
+// A round stamp with one letter: '!' for the giver, 'S' for the shop.
+function stamp(g, p, hex, letter, r) {
+  g.fillStyle = hex;
+  g.beginPath();
+  g.arc(px(p.x), py(p.z), r, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = '#fff7e6';
+  g.fillText(letter, px(p.x), py(p.z) + 0.5);
+}
+
+/** The 180 px map, called every second frame; everything comes from G. */
 export function drawMinimap(H, G) {
-  const ctx = H?.map;
-  if (!ctx || !G) return;
-  const city = G.city || { buildings: [], markers: {} };
-  const me = G.inCar && !G.inCar.wrecked
-    ? { x: G.inCar.x, z: G.inCar.z, yaw: G.inCar.heading }
-    : { x: G.P?.pos?.x ?? 0, z: G.P?.pos?.z ?? 0, yaw: G.P?.yaw ?? 0 };
+  const g = H?.mapCtx;
+  if (!g || !G) return;
+  const me = G.inCar || G.P?.pos || { x: 0, z: 0 };
+  const marks = G.city?.markers || {};
+  g.clearRect(0, 0, MINI, MINI);
+  if (H.mapStatic) g.drawImage(H.mapStatic, 0, 0);
+  else g.fillStyle = '#cfe6d8', g.fillRect(0, 0, MINI, MINI);
 
-  // Sea west of the shore, promenade band, pale blocks between the avenues.
-  ctx.fillStyle = PALE;
-  ctx.fillRect(0, 0, MAP, MAP);
-  ctx.fillStyle = WATER;
-  ctx.fillRect(0, 0, sx(CONFIG.world.sea), MAP);
-  ctx.fillStyle = TAN;
-  ctx.fillRect(sx(CONFIG.world.sea), 0, 28 * SCALE, MAP);
-  ctx.fillStyle = '#e2e7df';
-  for (const x0 of DIRS.slice(0, 4)) {
-    for (const z0 of DIRS.slice(0, 4)) ctx.fillRect(sx(x0 + 9), sz(z0 + 9), BLOCK * SCALE, BLOCK * SCALE);
+  // Skyline: cool towers east, warm low-rise west.
+  for (const b of G.city?.buildings || []) {
+    g.fillStyle = b.x >= 0 ? '#9fb3c4' : '#d9a98f';
+    g.fillRect(px(b.x - b.w / 2), py(b.z - b.d / 2), Math.max(2, b.w * SCALE), Math.max(2, b.d * SCALE));
   }
 
-  // The street grid, 2 px of asphalt so it reads at 180 px.
-  ctx.strokeStyle = DARK;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (const d of DIRS) {
-    ctx.moveTo(sx(d), 0);
-    ctx.lineTo(sx(d), MAP);
-    ctx.moveTo(0, sz(d));
-    ctx.lineTo(MAP, sz(d));
-  }
-  ctx.stroke();
+  // Traffic white, parked cars blue.
+  g.fillStyle = '#ffffff';
+  for (const car of G.traffic || []) g.fillRect(px(car.x) - 1.5, py(car.z) - 1.5, 3, 3);
+  g.fillStyle = '#4aa3ff';
+  for (const car of G.cars || []) if (car !== G.inCar) g.fillRect(px(car.x) - 2, py(car.z) - 2, 4, 3);
 
-  const park = city.park;
-  if (park) {
-    ctx.fillStyle = GRASS;
-    ctx.fillRect(sx(park.x - BLOCK / 2), sz(park.z - BLOCK / 2), BLOCK * SCALE, BLOCK * SCALE);
+  // Walkers.
+  g.fillStyle = '#5a6470';
+  for (const ped of G.peds || []) {
+    const p = ped.pos;
+    if (p) g.fillRect(px(p.x), py(p.z), 2, 1);
   }
 
-  // Towers grey-blue downtown, pastel stucco in Palm Ward.
-  for (const b of city.buildings || []) {
-    ctx.fillStyle = b.x >= 0 ? '#9fb7c6' : '#e3bca8';
-    ctx.fillRect(sx(b.x - b.w / 2), sz(b.z - b.d / 2), Math.max(2, b.w * SCALE), Math.max(2, b.d * SCALE));
+  // Police red, blinking with the lightbar.
+  g.fillStyle = Math.floor((G.time || 0) * 4) % 2 === 0 ? '#ff3b30' : '#ff9b94';
+  for (const row of G.PO?.cars || []) {
+    const c = row.car || row;
+    g.fillRect(px(c.x) - 2, py(c.z) - 2, 4, 4);
   }
+  for (const cop of G.PO?.foot || []) if (cop.pos) g.fillRect(px(cop.pos.x) - 1.5, py(cop.pos.z) - 1.5, 3, 3);
 
-  ctx.fillStyle = PARKED;
-  for (const car of G.cars || []) ctx.fillRect(sx(car.x) - 1, sz(car.z) - 1, 2, 2);
-  ctx.fillStyle = CIV;
-  for (const car of G.traffic || []) ctx.fillRect(sx(car.x) - 1, sz(car.z) - 1, 2, 2);
+  g.font = 'bold 11px "Segoe UI",Arial,sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  if (marks.glassOrchid) stamp(g, marks.glassOrchid, '#c8791f', '!', 6);
+  if (marks.vineMart) stamp(g, marks.vineMart, '#2e7d52', 'S', 5.5);
 
-  // Walkers: 1 px, within 40 m.
-  ctx.fillStyle = '#8a8f96';
-  for (const p of G.peds || []) {
-    if (!p || p.riding || p.state === 'down' || Math.hypot(p.pos.x - me.x, p.pos.z - me.z) > 40) continue;
-    ctx.fillRect(sx(p.pos.x), sz(p.pos.z), 1, 1);
-  }
+  // Job and fare markers, gold, edge-clamped.
+  if (G.M?.marker) diamond(g, G.M.marker.x, G.M.marker.z, C.marker);
+  const fare = G.E?.fareState && G.E.fares ? (G.fareMarker?.() || G.E.fareState.dest) : null;
+  if (fare && Number.isFinite(fare.x)) diamond(g, fare.x, fare.z, fare.kind === 'fare' ? '#ffb347' : C.marker, 5);
 
-  ctx.fillStyle = COP;
-  for (const row of G.PO?.cars || []) if (row?.car) ctx.fillRect(sx(row.car.x) - 1.5, sz(row.car.z) - 1.5, 3, 3);
-  for (const cop of G.PO?.foot || []) if (cop?.alive && !cop.down) ctx.fillRect(sx(cop.pos.x) - 1, sz(cop.pos.z) - 1, 2, 2);
-
-  // Mission and fare markers as gold diamonds, pinned to the rim if off-map.
-  const fare = fareMarker(G.E);
-  const marks = [G.M?.marker && { ...G.M.marker, color: GOLD }, fare && { ...fare, color: '#ffb347' }].filter(Boolean);
-  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-  ctx.lineWidth = 1;
-  for (const m of marks) {
-    const p = edgeClamp(sx(m.x), sz(m.z), RIM);
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y - 4);
-    ctx.lineTo(p.x + 4, p.y);
-    ctx.lineTo(p.x, p.y + 4);
-    ctx.lineTo(p.x - 4, p.y);
-    ctx.closePath();
-    ctx.fillStyle = m.color;
-    ctx.fill();
-    ctx.stroke();
-  }
-
-  stamp(ctx, city.markers?.vineMart, 'S', '#9cf0c0');
-  stamp(ctx, city.markers?.glassOrchid, '!', GOLD);
-
-  // The player: a triangle aimed where the body faces.
-  ctx.save();
-  ctx.translate(sx(me.x), sz(me.z));
-  ctx.rotate(-me.yaw);
-  ctx.beginPath();
-  ctx.moveTo(0, -5);
-  ctx.lineTo(3.6, 4);
-  ctx.lineTo(0, 2.2);
-  ctx.lineTo(-3.6, 4);
-  ctx.closePath();
-  ctx.fillStyle = PLAYER;
-  ctx.strokeStyle = '#1a2026';
-  ctx.lineWidth = 1;
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
+  // Player triangle, turned to the heading.
+  const yaw = G.inCar ? G.inCar.heading : G.P?.yaw || 0;
+  g.save();
+  g.translate(px(me.x), py(me.z));
+  g.rotate(-yaw + Math.PI);
+  g.beginPath();
+  g.moveTo(0, -6);
+  g.lineTo(4.5, 4);
+  g.lineTo(0, 1.5);
+  g.lineTo(-4.5, 4);
+  g.closePath();
+  g.fillStyle = '#ffffff';
+  g.strokeStyle = '#1d2733';
+  g.lineWidth = 1.5;
+  g.stroke();
+  g.fill();
+  g.restore();
+  g.fillStyle = 'rgba(20,32,48,.75)';
+  g.font = 'bold 10px "Segoe UI",Arial,sans-serif';
+  g.textAlign = 'left';
+  g.fillText('N', 5, 9);
 }

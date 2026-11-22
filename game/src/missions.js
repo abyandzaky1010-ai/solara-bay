@@ -1,246 +1,296 @@
-// Solara Bay: the three-chapter story, its quest markers and its win/fail logic.
+// Solara Bay — the three jobs Vesper hands out, the gold beacons that point at them,
+// the clock on the ones that hurry, and the ways a job goes wrong.
 
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { C, material } from './palette.js';
+import { C } from './palette.js';
+import { addStars, clearPolice } from './police.js';
 
-const MSG = CONFIG.missions;
-const PIER = { x: -184, z: -96 };
-const GIVER = { x: -30, z: -34 };
-const NEAR = 8;      // m: close enough to the giver to start
-const INSIDE = 5;    // m: inside a delivery lockup
-const PARKED = 1;    // m/s or less counts as stopped
-const TOUCH = 3;     // m on foot from the coupe to take it
-const DONE = 'The story is done. The bay is yours.';
+const MREWARD = CONFIG.missions;
+const MARK_REACH = 5; // m: close enough to touch the beacon
+const STOPPED = 1; // m/s: "stopped" for a delivery
+const COLUMN_H = 14;
 
+/**
+ * The story in three beats. `leads` names the marker each running stage points at,
+ * `steps` holds the line the HUD shows, `story` is what the complete panel prints.
+ */
 export const MISSIONS = [
   {
     id: 'm1',
     title: 'Wheels for Vesper',
     brief: 'Vesper wants the Coral coupe back. Take it, bring it to the Glass Orchid.',
-    reward: MSG.m1,
+    giver: 'glassOrchid',
+    reward: MREWARD.m1,
     story: 'It runs. Vesper smiles like a knife.',
-    retry: 'The coupe is waiting by the Glass Orchid. Go take it back.',
+    retry: 'The Coral coupe is back in its bay. Take it again when you are ready.',
+    steps: { steal: 'Steal the coral coupe', deliver: 'Drive it to the Glass Orchid and stop' },
   },
   {
     id: 'm2',
     title: 'Shake the Heat',
     brief: 'Show Vesper you can take the heat. Get two stars, then lose them within 90 seconds.',
-    reward: MSG.m2,
+    giver: 'glassOrchid',
+    reward: MREWARD.m2,
     story: 'The sirens fade. Somewhere out there, Otis is smiling.',
-    retry: 'Lose the stars before the clock runs out. Keep moving, break the line of sight.',
+    retry: 'The clock ran out with the sirens still howling. Run it again.',
+    steps: { armed: 'Make some noise: get two stars', evade: 'Lose the police before the clock runs out' },
   },
   {
     id: 'm3',
     title: 'Harbor Handoff',
-    brief: 'Pick up Otis\u2019s last package at the pier and deliver it to the Glass Orchid in 120 s. Expect heat.',
-    reward: MSG.m3,
+    brief: 'Pick up the package at the west pier and deliver it to the Glass Orchid in 120 s. Expect heat.',
+    giver: 'glassOrchid',
+    reward: MREWARD.m3,
     story: 'Solara Bay knows your name now. Free ride: fares pay, the shop sells, the bay stays warm.',
-    retry: 'The package is still on the west pier. Bring it to the Glass Orchid.',
+    retry: 'The package is still on the pier. The Glass Orchid is still waiting.',
+    steps: { pickup: 'Pick up the package at the west pier', deliver: 'Deliver the package to the Glass Orchid' },
   },
 ];
 
+/** The two lines under the title screen. */
 export const INTRO = [
-  'Vesper keeps the Glass Orchid running and her ledger clean.',
-  'She needs one driver with cold hands and a warm engine.',
+  'Vesper runs the Glass Orchid, and every favour in the bay gets paid back there.',
+  'Three jobs. One city with a short memory and a long nightstick.',
 ];
 
-// index = chapter, active = the running stage, timer = the countdown the HUD shows.
+/** Fresh mission record: chapter index, running job, its clock, its beacon. */
 export function initMissions() {
-  return { index: 0, active: null, timer: 0, step: '', marker: null, target: null, beacon: null, retries: 0, lastPrompt: -1 };
+  return { index: 0, active: null, timer: 0, step: '', marker: null, beacon: null, retries: 0, lastPrompt: -1 };
 }
 
-const at = (G) => (G.inCar ? { x: G.inCar.x, z: G.inCar.z, speed: Math.abs(G.inCar.speed), car: G.inCar } : { x: G.P.pos.x, z: G.P.pos.z, speed: 0, car: null });
-const dist = (p, x, z) => Math.hypot(p.x - x, p.z - z);
-const coupe = (G, M) => M.car || (G.cars || []).find((c) => c.tag === 'm1car') || null;
+const currentDef = (M) => MISSIONS[Math.min(M.index, MISSIONS.length - 1)];
+const at = (x, z) => (x === undefined ? null : { x, z });
+const stepText = (A) => (A ? A.def.steps[A.stage] || A.def.brief : '');
 
-// The gold beacon: a glowing column, a ring at the kerb and a pip on top (pulses in updateMissions).
-function buildBeacon(scene) {
+// Where a lead points right now. Live car positions, so m1's marker follows the coupe.
+function leadPoint(M, G, key) {
+  const city = G.city || {};
+  const marks = city.markers || {};
+  if (key === 'pier') return at(city.pier?.x ?? -194, city.pier?.z ?? -150);
+  if (key === 'lockup') return marks.glassOrchid ? at(marks.glassOrchid.x, marks.glassOrchid.z) : null;
+  const coupe = G.m1car || (G.cars || []).find((c) => c.tag === 'm1car');
+  return coupe && !coupe.wrecked ? at(coupe.x, coupe.z) : null;
+}
+
+// ------------------------------------------------------------------ the beacon
+
+// A gold column with a ring at its foot, built on first use and moved afterwards.
+function buildBeacon(W) {
   const group = new THREE.Group();
-  const column = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.6, 7, 12, 1, true), new THREE.MeshBasicMaterial({ color: C.marker, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false }));
-  column.position.y = 3.5;
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(2.1, 0.16, 6, 24).rotateX(Math.PI / 2), material(C.marker, { flat: true }));
-  ring.position.y = 0.14;
-  const pip = new THREE.Mesh(new THREE.OctahedronGeometry(0.5), material(C.beacon, { flat: true }));
-  pip.position.y = 7.4;
-  group.add(column, ring, pip);
-  group.userData = { column, ring, pip };
-  scene.add(group);
+  const column = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.6, 1.6, COLUMN_H, 16, 1, true),
+    new THREE.MeshBasicMaterial({ color: C.marker, transparent: true, opacity: 0.26, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  column.position.y = COLUMN_H / 2;
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(1.8, 0.14, 6, 20),
+    new THREE.MeshBasicMaterial({ color: C.marker, transparent: true, opacity: 0.85, depthWrite: false }),
+  );
+  Object.assign(ring.rotation, { x: -Math.PI / 2 });
+  ring.position.y = 0.25;
+  group.add(column, ring);
+  group.userData = { column, ring };
+  W.scene.add(group);
   return group;
 }
 
-function aim(M, G, x, z) {
-  if (!G.W) return;
-  if (!M.beacon) M.beacon = buildBeacon(G.W.scene);
+function placeBeacon(M, G, point) {
+  if (!point) {
+    if (M.beacon) M.beacon.visible = false;
+    return;
+  }
+  if (!M.beacon) M.beacon = buildBeacon(G.W);
   M.beacon.visible = true;
-  M.beacon.position.set(x, 0, z);
-  M.marker = M.target = { x, z };
+  M.beacon.position.set(point.x, 0, point.z);
 }
 
-function clearAim(M) {
-  if (M.beacon) M.beacon.visible = false;
-  M.marker = M.target = null;
+// Breath in and out: opacity rides a slow sine, the ring spins with the clock.
+function pulseBeacon(M, t) {
+  if (!M.beacon?.visible) return;
+  const { column, ring } = M.beacon.userData;
+  const beat = 0.5 + 0.5 * Math.sin(t * 2.4);
+  column.material.opacity = 0.18 + beat * 0.16;
+  ring.material.opacity = 0.6 + beat * 0.35;
+  ring.rotation.z = t * 0.9;
 }
 
-const STEP_TEXT = { steal: 'steal the Coral coupe', drive: 'drive it to the Glass Orchid and stop', arm: 'get two stars, then shake them', evade: 'lose the police before the clock runs out', pickup: 'pick up the package at the west pier', deliver: 'deliver it to the Glass Orchid and stop' };
+// ------------------------------------------------------------------ the job board
 
-// The line the HUD shows for the active stage.
-const stageText = (active) => STEP_TEXT[active.stage] || active.def.brief;
-
-// Start the current chapter: at the giver, or from a panel button.
+/** Start the next job: from the tablet at the Glass Orchid, or the panel button. */
 export function startMission(M, G) {
-  if (!M || !G || M.active || M.index >= MISSIONS.length) return false;
-  if (!G.forceStart && dist(G.P.pos, GIVER.x, GIVER.z) > NEAR) return false;
-  const def = MISSIONS[M.index];
+  if (!M || !G || M.index >= MISSIONS.length || M.active) return null;
+  const def = currentDef(M);
+  const stage = def.id === 'm1' ? 'steal' : def.id === 'm2' ? 'armed' : 'pickup';
+  M.active = { def, stage, clock: 0, warned: 0 };
+  M.step = stepText(M.active);
+  M.timer = 0;
   M.retries = 0;
-  M.lastPrompt = -1;
-  M.active = { def, stage: def.id === 'm1' ? 'steal' : def.id === 'm2' ? 'arm' : 'pickup', clock: 0, warned: false };
-  M.step = stageText(M.active);
-  M.timer = 0;
-  G.objective = { title: def.title, text: M.step, dist: 0 };
-  G.missionStart?.(M.index, def);
-  // Chapter two gets no marker: the work is shaking the cops, not driving.
-  if (def.id === 'm2') clearAim(M);
-  else {
-    const car = def.id === 'm1' ? coupe(G, M) : null;
-    const spot = def.id === 'm3' ? PIER : car || G.city.markers.glassOrchid;
-    aim(M, G, spot.x, spot.z);
-  }
-  return true;
+  M.marker = def.id === 'm2' ? null : leadPoint(M, G, stage);
+  placeBeacon(M, G, M.marker);
+  G.sound?.chime?.();
+  G.H?.toast?.(`${def.title}: ${M.step}`);
+  return M.active;
 }
 
-function complete(M, G, car) {
+// The job goes back on the board, unpaid, with the reason on screen.
+function failMission(M, G, why) {
   const def = M.active.def;
-  clearAim(M);
-  M.active = null;
-  M.timer = 0;
+  Object.assign(M, { active: null, marker: null, timer: 0, step: '', lastPrompt: M.index });
+  if (M.beacon) M.beacon.visible = false;
+  G.objective = null;
+  G.H?.toast?.(`Job failed: ${def.title}`);
+  if (G.missionFail) G.missionFail(def.title, why || def.retry);
+  else G.showPanel?.('complete');
+}
+
+// Pay out, log the story, turn the page.
+function completeMission(M, G) {
+  const def = M.active.def;
+  Object.assign(M, { active: null, marker: null, timer: 0, step: '' });
   M.index += 1;
-  M.step = M.index < MISSIONS.length ? MISSIONS[M.index].brief : DONE;
-  // The coupe is yours now: it stops being a mark and nobody else wants the keys.
-  if (car) Object.assign(car, { tag: null, occupied: null });
-  G.missionComplete?.(def.reward, def.story);
+  if (M.beacon) M.beacon.visible = false;
+  G.objective = null;
+  G.sound?.jingle?.(true);
+  if (G.missionComplete) G.missionComplete(def.reward, def.story);
+  else G.addMoney?.(def.reward);
+  // The last job ends with a clean record.
+  if (def.id === 'm3' && G.PO) clearPolice(G.PO, G);
+  return def;
 }
 
-// Back to the giver with a hint: nothing is lost but time.
-function fail(M, G, why) {
-  const def = M.active.def;
-  M.retries += 1;
-  M.active = null;
-  M.timer = 0;
-  M.step = def.retry;
-  clearAim(M);
-  G.missionFail?.(def.title, why || def.retry);
+// ------------------------------------------------------------------ stage tests
+
+// Is she inside the beacon's reach, and standing still?
+function delivered(G, point) {
+  if (!point) return false;
+  if (G.inCar) return Math.abs(G.inCar.speed) < STOPPED && Math.hypot(G.inCar.x - point.x, G.inCar.z - point.z) <= MARK_REACH;
+  const P = G.P;
+  return !P.dead && (P.speed || 0) < STOPPED && Math.hypot(P.pos.x - point.x, P.pos.z - point.z) <= MARK_REACH;
 }
 
-// Chapter one: take the coupe, then park it in the Orchid's lockup.
-function actOnWheels(M, G, here, dt) {
-  const active = M.active;
-  const car = coupe(G, M);
-  const lockup = G.city.markers.glassOrchid;
-  if (car && car.wrecked) return fail(M, G, 'the coupe is scrap');
-  active.clock += dt;
-  if (active.stage === 'steal') {
-    if (car) aim(M, G, car.x, car.z);
-    if (here.car && here.car === car) {
-      active.stage = 'drive';
-      return;
-    }
-    // Walk up to the coupe and the main loop hands it over.
-    if (car && dist(here, car.x, car.z) < TOUCH) G.stolen?.(car, M);
-    return;
-  }
-  aim(M, G, lockup.x, lockup.z);
-  // The coupe itself has to be inside the lockup and stopped, whoever drove it there.
-  if (car && dist(car, lockup.x, lockup.z) < INSIDE && Math.abs(car.speed) < PARKED) complete(M, G, car);
-}
-
-// Chapter two: two stars, then ninety seconds to lose them.
-function actShakeHeat(M, G, dt) {
-  const active = M.active;
-  clearAim(M);
-  if (active.stage === 'arm') {
-    if (G.PO.stars >= 2) {
-      active.stage = 'evade';
-      active.clock = 0;
-      M.timer = MSG.m2EvadeSec;
-      G.toast?.('Two stars. Lose them in 90 seconds.');
+// m1: steal the coupe, then park it inside the lockup.
+function runWheels(M, G) {
+  const A = M.active;
+  if (A.stage === 'steal') {
+    M.marker = leadPoint(M, G, 'steal');
+    const coupe = G.m1car;
+    if (coupe?.wrecked) return failMission(M, G, 'The Coral coupe is a wreck. Vesper wants it whole.');
+    if (coupe?.player) {
+      Object.assign(A, { stage: 'deliver' });
+      G.sound?.chime?.();
+      G.H?.toast?.('Coupe taken. Glass Orchid, and parked.');
     }
     return;
   }
-  active.clock += dt;
-  M.timer = Math.max(0, MSG.m2EvadeSec - active.clock);
-  if (G.PO.stars === 0) complete(M, G);
-  else if (active.clock >= MSG.m2EvadeSec) fail(M, G, 'the clock ran out and the sirens stayed');
-}
-
-// Chapter three: the package on the west pier, then home with heat on the tail.
-function actHandoff(M, G, here, dt) {
-  const active = M.active;
-  if (active.stage === 'pickup') {
-    aim(M, G, PIER.x, PIER.z);
-    if (dist(here, PIER.x, PIER.z) < 6) {
-      active.stage = 'deliver';
-      active.clock = 0;
-      M.timer = MSG.m3DeliverySec;
-      G.addStars?.(3);
-      G.toast?.('Package secured. Sirens inbound.');
-      aim(M, G, G.city.markers.glassOrchid.x, G.city.markers.glassOrchid.z);
-    }
+  M.marker = leadPoint(M, G, 'lockup');
+  const car = G.inCar;
+  if (!car || car.wrecked || car.tag !== 'm1car') {
+    if (G.m1car?.wrecked) return failMission(M, G, MISSIONS[0].retry);
+    M.marker = G.m1car ? at(G.m1car.x, G.m1car.z) : M.marker;
     return;
   }
-  const lockup = G.city.markers.glassOrchid;
-  aim(M, G, lockup.x, lockup.z);
-  active.clock += dt;
-  if (dist(here, lockup.x, lockup.z) < INSIDE && here.speed < PARKED) {
-    G.PO.stars = 0;
-    G.sound?.siren?.(false);
-    return complete(M, G);
-  }
-  // Out of time with the package still in hand: Otis waits, and Vesper notices.
-  if (active.clock >= MSG.m3DeliverySec) fail(M, G, 'Otis is waiting and the clock is empty');
+  if (delivered(G, M.marker)) completeMission(M, G);
 }
 
-// The one frame call: marker, stage logic, countdown, HUD objective.
+// m2: two stars, then ninety seconds to shake them.
+function runShake(M, G, dt) {
+  const A = M.active;
+  M.marker = null;
+  const stars = G.PO?.stars | 0;
+  if (A.stage === 'armed') {
+    if (stars < 2) return;
+    Object.assign(A, { stage: 'evade', clock: MREWARD.m2EvadeSec });
+    M.timer = Math.ceil(A.clock);
+    G.sound?.chime?.();
+    G.H?.toast?.('Two stars. Ninety seconds. Go dark.');
+    return;
+  }
+  A.clock -= dt;
+  M.timer = Math.max(0, Math.ceil(A.clock));
+  if (stars <= 0) completeMission(M, G);
+  else if (A.clock <= 0) failMission(M, G, MISSIONS[1].retry);
+}
+
+// m3: the pier package, three stars of chase, the lockup inside the clock.
+function runHarbor(M, G, dt) {
+  const A = M.active;
+  if (A.stage === 'pickup') {
+    M.marker = leadPoint(M, G, 'pier');
+    if (!delivered(G, M.marker)) return;
+    Object.assign(A, { stage: 'deliver', clock: MREWARD.m3DeliverySec });
+    M.timer = Math.ceil(A.clock);
+    if (G.PO) (G.PO.stars = 0) || addStars(G.PO, 3, G);
+    G.sound?.siren?.(true);
+    G.H?.toast?.('Package aboard. The dock is full of cruisers.');
+    return;
+  }
+  M.marker = leadPoint(M, G, 'lockup');
+  A.clock -= dt;
+  M.timer = Math.max(0, Math.ceil(A.clock));
+  // The heat stays on while she runs the package.
+  if (G.PO && (G.PO.stars | 0) < 2 && A.clock > 6) addStars(G.PO, 1, G);
+  if (delivered(G, M.marker)) completeMission(M, G);
+  else if (A.clock <= 0) failMission(M, G, MISSIONS[2].retry);
+}
+
+// ------------------------------------------------------------------ the frame
+
+/**
+ * One tick of the job tablet: beacon glow, the running step, the clock, wins and losses.
+ * With nothing running, the marker sits on the giver so the map can point there.
+ */
 export function updateMissions(M, G, dt) {
-  if (!M || !G || !G.P || (G.screen && G.screen !== 'play')) return;
-  const here = at(G);
-  const active = M.active;
+  if (!M || !G?.P) return M;
+  pulseBeacon(M, G.time || 0);
 
-  if (!active) {
-    M.step = M.index < MISSIONS.length ? MISSIONS[M.index].brief : DONE;
-    if (M.index < MISSIONS.length) {
-      // Chapter one points at the coupe itself, later chapters at Vesper's door.
-      const car = M.index === 0 ? coupe(G, M) : null;
-      aim(M, G, car ? car.x : GIVER.x, car ? car.z : GIVER.z);
-      G.objective = { title: MISSIONS[M.index].title, text: M.step, dist: M.target ? Math.round(dist(here, M.target.x, M.target.z)) : 0 };
-      if (dist(here, GIVER.x, GIVER.z) < NEAR && M.lastPrompt !== M.index) {
-        M.lastPrompt = M.index;
-        G.missionPrompt?.(M.index);
-      }
-    } else {
-      clearAim(M);
-      G.objective = { title: 'Solara Bay', text: 'free ride \u2014 fares, the shop, the sunshine', dist: 0 };
-    }
-  } else if (active.def.id === 'm1') actOnWheels(M, G, here, dt);
-  else if (active.def.id === 'm2') actShakeHeat(M, G, dt);
-  else actHandoff(M, G, here, dt);
-
-  // A wrecked ride in either driving chapter ends it on the spot.
-  if (M.active && here.car && here.car.wrecked && M.active.def.id !== 'm2') fail(M, G, 'the ride is wrecked');
-
-  // Beacon breathing, then the HUD line.
-  if (M.beacon && M.beacon.visible && G.time !== undefined) {
-    const ud = M.beacon.userData;
-    ud.ring.scale.setScalar(1 + Math.sin(G.time * 3) * 0.14);
-    ud.pip.rotation.y = G.time * 1.6;
-    ud.column.material.opacity = 0.26 + Math.sin(G.time * 3) * 0.1;
+  if (!M.active) {
+    if (M.index >= MISSIONS.length) return M;
+    const giver = (G.city?.markers || {})[currentDef(M).giver];
+    if (giver) placeBeacon(M, G, at(giver.x, giver.z));
+    return M;
   }
-  if (M.active) G.objective = { title: M.active.def.title, text: M.step, dist: M.target ? Math.round(dist(here, M.target.x, M.target.z)) : 0, timer: M.timer };
+
+  const def = M.active.def;
+  if (def.id === 'm1') runWheels(M, G);
+  else if (def.id === 'm2') runShake(M, G, dt);
+  else runHarbor(M, G, dt);
+  if (!M.active) return M;
+
+  M.step = stepText(M.active);
+  placeBeacon(M, G, M.marker);
+  const me = G.inCar && !G.inCar.wrecked ? G.inCar : G.P.pos;
+  G.objective = {
+    title: def.title,
+    text: M.step,
+    dist: M.marker ? Math.round(Math.hypot(me.x - M.marker.x, me.z - M.marker.z)) : 0,
+    timer: M.timer || 0,
+    kind: M.active.stage,
+  };
+  return M;
 }
 
-// Panel copy for the pause screen and the shop sign: title, brief, step, pay.
+/** One line for the pause and complete panels: the chapter, the step, the clock. */
 export function missionPanelText(M) {
-  const def = M?.active?.def || MISSIONS[Math.min(M?.index || 0, MISSIONS.length - 1)];
-  // Panels and the shop read the title from here.
-  return { title: def.title, brief: def.brief, step: M?.step || def.brief, reward: def.reward, count: `${Math.min((M?.index || 0) + 1, MISSIONS.length)} / ${MISSIONS.length}` };
+  if (!M) return '';
+  if (M.active) {
+    const s = M.timer;
+    const clock = s ? ` · ${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` : '';
+    return `${M.active.def.title}: ${M.step}${clock}`;
+  }
+  if (M.index >= MISSIONS.length) return 'All three jobs done. The bay is yours.';
+  const def = currentDef(M);
+  return `Next: ${def.title}: ${def.brief}`;
+}
+
+/** A short label for the title screen and save panel. */
+export function missionLabel(M) {
+  if (!M) return '';
+  if (M.active) return missionPanelText(M);
+  return M.index >= MISSIONS.length ? 'All jobs done.' : `Next: ${currentDef(M).title}`;
+}
+
+/** How far through the story, 0..1. */
+export function missionProgress(M) {
+  return M ? Math.min(1, M.index / MISSIONS.length) : 0;
 }

@@ -1,139 +1,124 @@
-import * as THREE from 'three';
 import { makeRng } from './random.js';
-import { makeCar } from './car.js';
-import { C, material } from './palette.js';
-import { showPanel, hidePanels } from './hud.js';
-import { addStars } from './police.js';
+import { C } from './palette.js';
+import { makeCar, addCarToScene } from './car.js';
+import { makeFarePed } from './peds.js';
 import { startMission } from './missions.js';
-import { spawnTracer, spawnMuzzle } from './render.js';
+import { updatePolice } from './police.js';
+import { spawnMuzzle, spawnTracer } from './render.js';
+import { hidePanels, showPanel } from './hud.js';
+import { respawnPlayer } from './player.js';
 
-const NAMES = ['chase', 'city', 'mission', 'start'];
-
-function movePed(p, x, z, yaw) {
-  Object.assign(p, { state: 'walk', riding: false, fare: false, hp: 40, fleeT: 0 });
-  p.pos.set(x, 0, z);
-  p.mesh.position.set(x, 0, z);
-  p.mesh.rotation.y = yaw;
-  p.mesh.visible = true;
+function roll(G, kind, x, z, heading, color, speed) {
+  const car = makeCar(kind, x, z, heading, color);
+  car.speed = speed || 0;
+  car.mesh.position.set(x, 0, z);
+  car.mesh.rotation.y = heading;
+  return addCarToScene(G.W, car);
 }
 
-function park(G, kind, x, z, h, color) {
-  const c = Object.assign(makeCar(kind, x, z, h, color), { occupied: null, player: false, speed: 0, tag: null });
-  G.cars.push(c);
-  G.W.scene.add(c.mesh);
-  return c;
+function driveShot(G, car) {
+  Object.assign(car, { player: true, occupant: null, speed: 22 });
+  G.inCar = car;
+  G.P.pos.set(car.x, 0, car.z);
+  G.P.group.visible = false;
+  G.W.yaw = car.heading + Math.PI;
+  G.W.pitch = 0.26;
+  G.I.lock = () => {};
 }
 
-function copCar(G, x, z, h) {
-  const c = park(G, 'police', x, z, h, C.copbody);
-  c.siren = true;
-  G.PO.cars.push({ car: c, bailT: 0, dead: false, block: false });
-}
+const SCENES = {
+  chase(G) {
+    const coupe = G.m1car;
+    Object.assign(coupe, { x: 12, z: 88, heading: 0, hp: 100, wrecked: false, speed: 22 });
+    coupe.mesh.position.set(12, 0, 88);
+    coupe.mesh.rotation.y = 0;
+    driveShot(G, coupe);
+    G.PO.stars = 3;
+    G.sound.siren(true);
+    G.PO.cars.push({ car: roll(G, 'police', 24, 100, 0.1, C.copbody, 14), dead: false });
+    G.PO.cars.push({ car: roll(G, 'police', 6, 66, 0.35, C.copbody, 12), dead: false });
+    G.traffic.slice(0, 3).forEach((c, i) => {
+      const x = 12 + (i % 2 ? -8 : 8);
+      const z = 40 + i * 46;
+      Object.assign(c, { x, z, heading: i === 2 ? Math.PI : 0, speed: 8 });
+      c.mesh.position.set(x, 0, z);
+      c.mesh.rotation.y = c.heading;
+    });
+  },
 
-function onFoot(G, x, z, yaw) {
-  const P = G.P;
-  P.yaw = yaw;
-  P.group.visible = true;
-  P.pos.set(x, 0, z);
-  P.group.position.set(x, 0, z);
-  P.group.rotation.set(0, yaw, 0);
-  G.inCar = null;
-}
+  city(G, rng) {
+    const { P, W, M } = G;
+    respawnPlayer(P, G, { x: 30, z: -6 });
+    P.yaw = W.yaw = Math.PI * 0.85;
+    P.group.position.set(30, 0, -6);
+    roll(G, 'taxi', 12, 6, 0, C.taxi, 8);
+    roll(G, 'sedan', 34, 6, Math.PI, C.sedan, 6);
+    roll(G, 'sedan', -18, 0, Math.PI / 2, 0x6c7f92, 7);
+    for (let i = 0; i < 4; i += 1) makeFarePed(W, G.city, rng, 22 + i * 4, -9 - (i % 2) * 1.5);
+    M.index = 0;
+    startMission(M, G);
+    G.objective = { title: 'Wheels for Vesper', text: 'Steal the coral coupe', dist: 60, timer: 0, kind: 'steal' };
+  },
 
-function cop(G, x, z, yaw) {
-  const g = new THREE.Group();
-  const put = (w, h, d, hex, px, py) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material(hex));
-    m.position.set(px, py, 0);
-    m.castShadow = true;
-    g.add(m);
-    return m;
-  };
-  put(0.46, 0.86, 0.3, C.coptrim, 0, 1.16);
-  put(0.26, 0.28, 0.26, C.skin[1], 0, 1.72);
-  const legL = put(0.16, 0.62, 0.18, 0x22304a, -0.11, 0.62);
-  const legR = put(0.16, 0.62, 0.18, 0x22304a, 0.11, 0.62);
-  const armR = put(0.12, 0.44, 0.14, C.coptrim, 0.29, 1.42);
-  armR.rotation.x = -1.3;
-  g.userData = { legL, legR, armL: armR, armR };
-  g.position.set(x, 0, z);
-  g.rotation.y = yaw;
-  G.W.scene.add(g);
-  const row = { mesh: g, pos: new THREE.Vector3(x, 0, z), yaw, hp: 60, down: false, deadT: 0, alive: true, nextShot: 99, walkT: 0, strafe: 1, strafeT: 2 };
-  G.PO.foot.push(row);
-  return row;
-}
+  mission(G) {
+    const { P, PO, city, W, M } = G;
+    const at = city.pickup;
+    respawnPlayer(P, G, { x: at.x + 2.5, z: at.z + 2.5 });
+    Object.assign(P, { rifle: true, ammo: 60, weapon: 'rifle', yaw: Math.PI * 0.25 });
+    W.yaw = Math.PI * 0.25;
+    W.pitch = 0.12;
+    P.group.position.set(at.x + 2.5, 0, at.z + 2.5);
+    PO.stars = 2;
+    G.sound.siren(true);
+    updatePolice(PO, G, 0.016);
+    const coming = PO.foot[0];
+    const downed = PO.foot[1];
+    if (coming) Object.assign(coming.pos, { x: at.x - 4.5, z: at.z - 4.5 });
+    if (downed) {
+      Object.assign(downed, { down: true, deadT: 60, hp: 0 });
+      Object.assign(downed.pos, { x: at.x + 7.5, z: at.z - 1.5 });
+      downed.mesh.rotation.z = Math.PI / 2;
+      downed.mesh.position.set(downed.pos.x, 0.3, downed.pos.z);
+    }
+    spawnMuzzle({ x: at.x - 4.5, y: 1.35, z: at.z - 4.5 });
+    spawnTracer({ x: at.x - 4.5, y: 1.35, z: at.z - 4.5 }, { x: at.x + 2.9, y: 1.2, z: at.z + 2.9 });
+    const cop = PO.cars[0] && PO.cars[0].car;
+    if (cop) {
+      Object.assign(cop, { x: city.park.x + 46, z: city.park.z - 40, speed: 8 });
+      cop.mesh.position.set(cop.x, 0, cop.z);
+    }
+    M.index = 1;
+    startMission(M, G);
+    G.objective = { title: 'Shake the Heat', text: 'Lose the police before the clock runs out', dist: 0, timer: 72, kind: 'evade' };
+  },
 
-function downedCop(G, x, z) {
-  const c = Object.assign(cop(G, x, z, 0.6), { down: true, hp: 0, deadT: 900 });
-  c.mesh.rotation.z = Math.PI / 2;
-  c.mesh.position.y = 0.3;
-}
+  start(G) {
+    hidePanels(G.H);
+    showPanel(G.H, 'title');
+    G.screen = 'title';
+    G.W.yaw = 2.4;
+    G.W.pitch = 0.46;
+    const coupe = G.m1car;
+    Object.assign(coupe, { x: 2, z: 40, heading: Math.PI, hp: 100, wrecked: false, speed: 0 });
+    coupe.mesh.position.set(2, 0, 40);
+    coupe.mesh.rotation.y = Math.PI;
+  },
+};
 
 export function applyShot(name, G) {
   try {
-    window.__shotReady = false;
-    if (!NAMES.includes(name)) throw new Error('bad');
-    G.rng = makeRng(1);
-    G.screen = 'play';
-    G.PO.stars = 0;
-    for (const p of G.peds) if (p.mesh) p.mesh.visible = false;
-    hidePanels(G.H);
-
-    if (name === 'chase') {
-      const car = G.cars.find((c) => c.tag === 'm1car');
-      Object.assign(car, { x: 12, z: 88, heading: 0, speed: 18, wrecked: false, hp: 100, player: true, occupied: null });
-      car.mesh.position.set(12, 0, 88);
-      car.mesh.rotation.y = 0;
-      G.P.group.visible = false;
-      G.inCar = car;
-      Object.assign(G.W, { yaw: 0, pitch: 0.2 });
-      addStars(G.PO, 3, G);
-      copCar(G, 24, 100, 0);
-      copCar(G, 26, 134, 0);
-      G.traffic.forEach((t, i) => {
-        Object.assign(t, { x: i % 2 ? 3.2 : -3.2, z: 20 + i * 13, heading: 0, speed: 9, taken: false });
-        t.mesh.position.set(t.x, 0, t.z);
-        t.mesh.rotation.y = 0;
-      });
-      [[-4, 92], [2, 96], [-2, 84], [6, 104]].forEach((s, i) => movePed(G.peds[i], s[0], s[1], 0.3 * i));
-    } else if (name === 'city') {
-      onFoot(G, 30, 6, Math.PI / 2);
-      Object.assign(G.W, { yaw: Math.PI, pitch: 0.24 });
-      park(G, 'taxi', 44, 9, Math.PI / 2, C.taxi);
-      park(G, 'sedan', 58, 4, -Math.PI / 2, C.sedan);
-      park(G, 'sport', 20, 9, Math.PI / 2, C.sport);
-      [[33, 2], [27, 10], [36, 11], [24, 3], [40, 1], [31, 13]].forEach((s, i) => movePed(G.peds[i], s[0], s[1], 0.7 * i));
-      startMission(G.M, G);
-    } else if (name === 'mission') {
-      const k = G.city.pickup || { x: -41, z: -41 };
-      Object.assign(G.P, { rifle: true, ammo: 60, weapon: 'rifle' });
-      G.P.rig.rifle.visible = true;
-      G.P.rig.gun.visible = false;
-      onFoot(G, k.x - 4, k.z + 3, -Math.PI * 0.75);
-      Object.assign(G.W, { yaw: Math.PI * 0.75, pitch: 0.26 });
-      addStars(G.PO, 2, G);
-      const c = cop(G, k.x - 14, k.z + 12, Math.PI * 0.75);
-      const from = { x: c.pos.x, y: 1.4, z: c.pos.z };
-      spawnMuzzle(from);
-      spawnTracer(from, { x: G.P.pos.x, y: 1.3, z: G.P.pos.z });
-      copCar(G, -30, -10, Math.PI / 2);
-      downedCop(G, k.x + 6, k.z - 5);
-      movePed(G.peds[0], -22, -22, 1.2);
-    } else {
-      G.screen = 'title';
-      showPanel(G.H, 'title');
-      if (G.H.hud) G.H.hud.classList.add('hidden');
-      onFoot(G, -30, 30, 0);
-      park(G, 'sport', -40, 20, 0.4, C.sport);
-      Object.assign(G.W, { yaw: 0.9, pitch: 0.5 });
-      G.W.camPos.set(-78, 30, 46);
-      G.W.camera.position.copy(G.W.camPos);
-      G.W.camera.lookAt(40, 16, -30);
-    }
+    const scene = name && SCENES[name];
+    if (!scene) throw new Error('unknown shot: ' + name);
+    scene(G, makeRng(1));
+    if (G.screen !== 'title') G.screen = 'play';
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      window.__shotReady = true;
+      document.title = 'SB-' + name + '-ok';
+    }));
     return true;
   } catch (err) {
-    document.title = `SB-error-${String(err?.message || err).slice(0, 100)}`;
+    document.title = ('SB-error-' + ((err && err.message) || err)).slice(0, 100);
+    document.body.appendChild(Object.assign(document.createElement('pre'), { textContent: 'shot failed: ' + ((err && err.message) || err) }));
     return false;
   }
 }

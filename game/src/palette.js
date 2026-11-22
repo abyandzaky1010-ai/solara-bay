@@ -1,4 +1,4 @@
-// Named colours for the bright day look of Solara Bay, plus a cached material factory.
+// Solara Bay — the bay's colour names and the shared material factory.
 
 import * as THREE from 'three';
 
@@ -34,20 +34,15 @@ export const C = {
 
 const cache = new Map();
 
-function keyOf(hex, flat, glassy) {
-  return `${hex}|${flat ? 1 : 0}|${glassy ? 1 : 0}`;
-}
-
 export function material(hex, { flat = false, glassy = false } = {}) {
-  const key = keyOf(hex, flat, glassy);
-  const hit = cache.get(key);
-  if (hit) return hit;
+  const key = `${hex}|${flat ? 'f' : 'n'}|${glassy ? 'g' : 'l'}`;
+  let mat = cache.get(key);
+  if (mat) return mat;
 
-  let mat;
   if (flat) {
     mat = new THREE.MeshBasicMaterial({ color: hex });
   } else if (glassy) {
-    mat = new THREE.MeshPhongMaterial({ color: hex, shininess: 80, specular: 0xffffff });
+    mat = new THREE.MeshPhongMaterial({ color: hex, shininess: 80, specular: 0xdfefff });
   } else {
     mat = new THREE.MeshLambertMaterial({ color: hex });
   }

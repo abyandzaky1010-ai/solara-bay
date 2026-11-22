@@ -1,9 +1,14 @@
-// Solara Bay: the wallet, the Vine Mart shelf, the taxi meter and the local save file.
+// Solara Bay — wallet, Vine Mart counter, taxi meter, save file.
 
 import { CONFIG } from './config.js';
 
-const ECON = CONFIG.economy, RIFLE = CONFIG.weapons.rifle, CAP = 100, STOPPED = 1, ROUND = 10;
-const HOP = [ECON.fareDestMin, ECON.fareDestMax];
+const ECO = CONFIG.economy;
+const HALF = CONFIG.world.half;
+const WEST = Math.max(CONFIG.world.sea + 6, -HALF + 8);
+const AVES = [-160, -80, 0, 80, 160];
+const PICKUP = 4; // m
+const DROP = 5; // m
+const STOPPED = 1; // m/s
 
 export const SHOP = [
   { item: 'rifle', label: 'Rifle', price: 600 },
@@ -12,233 +17,320 @@ export const SHOP = [
   { item: 'medkit', label: 'Medkit', price: 50 },
 ];
 
-export function initEconomy(loaded) {
-  const money = loaded && Number.isFinite(loaded.money) ? Math.max(0, Math.round(loaded.money)) : ECON.start;
-  return { money, fares: false, fareState: null, savedAt: 0, pulse: 0 };
-}
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const bank = (n) => `$${Math.max(0, Math.round(n)).toLocaleString('en-US')}`;
+const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+const cabReady = (G) => !!G?.inCar && G.inCar.kind === 'taxi' && !G.inCar.wrecked;
 
-// Pays in, announces, never dips below zero.
+/** Fresh wallet at the stake, or the balance the save remembers. */
+export const initEconomy = (loaded) => ({
+  money: loaded && Number.isFinite(loaded.money) ? Math.max(0, Math.round(loaded.money)) : ECO.start,
+  fares: false,
+  fareState: null,
+});
+
+// Every credit; from $25 up a toast explains it and the counter rolls.
 export function addMoney(E, n, H) {
   if (!E) return 0;
   const amount = Math.round(n || 0);
-  E.money = Math.max(0, E.money + amount);
-  if (amount > 0) E.pulse = 1;
-  H?.toast?.(`${amount < 0 ? '-' : '+'}$${Math.abs(amount)}`);
+  if (amount < 0) return takeMoney(E, -amount, H);
+  E.money += amount;
+  if (amount >= 25 && H) {
+    E.shown = Math.min(Number.isFinite(E.shown) ? E.shown : E.money - amount, E.money - amount);
+    toast(H, `+${bank(amount)}`);
+  }
   return E.money;
 }
 
+// Fines and hospital bills, clipped to the wallet.
+export function takeMoney(E, n, H) {
+  if (!E) return 0;
+  const paid = Math.min(E.money, Math.max(0, Math.round(n || 0)));
+  E.money -= paid;
+  E.shown = E.money;
+  if (paid && H) toast(H, `-${bank(paid)}`);
+  return paid;
+}
+
+export const chargeFee = (E, fee, H) => takeMoney(E, fee, H);
+
+// Roll the shown balance toward the true one.
+export function rollMoney(E, dt) {
+  if (!E) return 0;
+  if (!Number.isFinite(E.shown)) E.shown = E.money;
+  const gap = E.money - E.shown;
+  if (Math.abs(gap) < 1.5) return (E.shown = E.money);
+  E.shown += Math.sign(gap) * Math.min(Math.abs(gap), Math.max(24, Math.abs(gap) * Math.min(1, dt * 5)));
+  return Math.round(E.shown);
+}
+
+export const formatMoney = (E) => bank(Number.isFinite(E?.shown) ? E.shown : E?.money ?? 0);
+
+// One line off the counter: cash out, effect, receipt.
 export function buyItem(E, P, item, G) {
-  const row = SHOP.find((r) => r.item === item);
-  if (!row || !E || !P || (item === 'rifle' && P.rifle)) return false;
+  const row = SHOP.find((entry) => entry.item === item);
+  if (!row || !E || !P) return false;
   if (E.money < row.price) {
-    G?.H?.toast?.(`Not enough cash for the ${row.label.toLowerCase()}.`);
+    if (G?.H) toast(G.H, 'Not enough cash.');
     return false;
   }
   E.money -= row.price;
-  if (item === 'rifle') Object.assign(P, { rifle: true, ammo: P.ammo || RIFLE.ammoPerBuy });
-  else if (item === 'ammo') P.ammo += RIFLE.ammoPerBuy;
-  else if (item === 'armor') P.armor = CAP;
-  else P.hp = CONFIG.player.hp;
+  E.shown = Math.min(Number.isFinite(E.shown) ? E.shown : E.money, E.money);
+  if (item === 'rifle') P.rifle = true;
+  else if (item === 'ammo') P.ammo = (P.ammo | 0) + CONFIG.weapons.rifle.ammoPerBuy;
+  else if (item === 'armor') P.armor = 100;
+  else if (item === 'medkit') P.hp = CONFIG.player.hp;
   G?.sound?.chime?.();
-  G?.H?.toast?.(`Bought ${row.label} -$${row.price}`);
-  G?.saveSoon?.();
+  if (G?.H) toast(G.H, `${row.label} — bought`);
+  saveGame(G);
   return true;
 }
 
-// ---- Taxi meter ---------------------------------------------------------
-
-const isCab = (car) => !!car && car.kind === 'taxi' && !car.wrecked;
-const here = (G) => (G?.inCar ? { x: G.inCar.x, z: G.inCar.z } : { x: G?.P?.pos?.x ?? 0, z: G?.P?.pos?.z ?? 0 });
-const gap = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
-
-export const setFares = (E, on) => !!(E && (E.fares = !!on));
-export const describeFare = (s) => (!s ? 'No fare.' : s.phase === 'pickup' ? 'Pick up the fare' : 'Drive the fare to the marker');
-
-// Base pay, then ~35 cents a metre from 100 to 300 m, in tens inside 80..150.
-export function farePay(distance) {
-  const share = Math.min(1, Math.max(0, (distance - HOP[0]) / (HOP[1] - HOP[0])));
-  const raw = Math.round((ECON.fareMin + (ECON.fareMax - ECON.fareMin) * share) / ROUND) * ROUND;
-  return Math.max(ECON.fareMin, Math.min(ECON.fareMax, raw));
+// A point on an avenue: the real junction when the world is up, else the nearest lane.
+function roadPoint(G, x, z) {
+  const node = G?.W?.roads?.at?.(x, z);
+  if (node) return { x: node.x, z: node.z };
+  const near = (v) => AVES.reduce((b, s) => (Math.abs(v - s) < Math.abs(v - b) ? s : b), AVES[0]);
+  const span = HALF - CONFIG.world.roadHalf;
+  return Math.abs(x - near(x)) <= Math.abs(z - near(z)) ? { x: near(x), z: clamp(z, -span, span) } : { x: clamp(x, -span, span), z: near(z) };
 }
 
-// A rider at the kerb, or the nearest walker if the city has no fare spawner.
-function summonRider(G, cab) {
-  let rider = typeof G.spawnFare === 'function' ? G.spawnFare(cab.x, cab.z) : null;
-  if (!rider && G.peds?.length) rider = G.peds.filter((p) => !p.riding).sort((a, b) => gap(a.pos, cab) - gap(b.pos, cab))[0];
-  return rider ? Object.assign(rider, { fare: true, state: 'wait', taxi: null, riding: false }) : null;
+const geometry = (G) => (G?.inCar
+  ? { x: G.inCar.x, z: G.inCar.z, speed: Math.abs(G.inCar.speed || 0) }
+  : { x: G?.P?.pos?.x ?? 0, z: G?.P?.pos?.z ?? 0, speed: 0 });
+
+// Stand a waving fare on a kerb a short hop from (from).
+function callFare(E, G, from) {
+  const spots = [];
+  for (let i = 0; i < 8; i += 1) {
+    const a = i * 0.79 + 0.7;
+    const r = 40 + (i % 4) * 18;
+    spots.push(roadPoint(G, from.x + Math.cos(a) * r, from.z + Math.sin(a) * r));
+  }
+  const spot = spots.find((p) => dist(p, from) > 25 && dist(p, from) < 110) || roadPoint(G, from.x + 30, from.z);
+  E.fareState = { stage: 'await', ped: G?.spawnFare?.(spot.x, spot.z) || null, dest: null, dist: 0, waited: 0 };
+  if (G?.H) toast(G.H, 'A fare is waving up the block. Yellow cab only.');
+  G?.sound?.chime?.();
+  return E.fareState;
 }
 
-// A junction 100-300 m out, closest to a comfortable mid-length hop.
-function pickDestination(W, G, cab) {
-  const roll = () => (G?.rng ? G.rng.next() : Math.random());
-  const nodes = (W?.roads?.nodes || []).map((n) => ({ x: n.x, z: n.z, d: gap(n, cab) }));
-  const far = nodes.filter((n) => n.d >= HOP[0]);
-  const band = far.filter((n) => n.d <= HOP[1]);
-  const pool = band.length ? band : far;
-  if (!pool.length) return null;
-  const want = HOP[0] + (HOP[1] - HOP[0]) * (0.25 + roll() * 0.6);
-  return pool.reduce((best, n) => (Math.abs(n.d - want) < Math.abs(best.d - want) ? n : best), pool[0]);
+// A kerb 100-300 m out, never the one the passenger is standing on.
+function w(G, from) {
+  for (let i = 0; i < 12; i += 1) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 100 + Math.random() * 200;
+    const p = roadPoint(G, from.x + Math.cos(a) * r, from.z + Math.sin(a) * r);
+    const d = dist(p, from);
+    if (d >= 100 && d <= 300 && p.x > WEST && Math.abs(p.x) < HALF - 4 && Math.abs(p.z) < HALF - 4) return { ...p, dist: d };
+  }
+  const p = roadPoint(G, from.x + 140, from.z + 140);
+  return { ...p, dist: dist(p, from) };
 }
 
-const waiting = (rider) => ({ phase: 'pickup', ped: rider, x: rider.pos.x, z: rider.pos.z, dest: null, dist: 0 });
+// Start band plus distance, stepped to ten, kept inside 80..150.
+function farePay(distance) {
+  const raw = ECO.fareMin + (ECO.fareMax - ECO.fareMin) * clamp(distance / 200, 0, 1);
+  return clamp(Math.round(raw / 10) * 10, ECO.fareMin, ECO.fareMax);
+}
 
-// T inside a cab: duty on, off, or a reminder of where the fare stands.
+function q(ped, car) {
+  if (!ped) return;
+  if (car) ped.pos.set(car.x + 1.6, 0, car.z + 1.2);
+  Object.assign(ped, { fare: false, state: 'walk', riding: false, taxi: null, fleeT: 0, speed: CONFIG.peds.speed });
+  if (ped.mesh) {
+    ped.mesh.visible = true;
+    ped.mesh.rotation.set(0, ped.yaw || 0, 0);
+    ped.mesh.position.copy(ped.pos);
+  }
+  if (ped.shadow) ped.shadow.visible = true;
+}
+
+// Taxi duty on or off; a cab is required, the first call-out plants a fare.
+export function setFares(E, on, G) {
+  if (!E) return false;
+  const want = !!on;
+  if (want && !cabReady(G)) {
+    E.fares = false;
+    if (G?.H) toast(G.H, 'Taxi duty needs a yellow cab.');
+  } else if (E.fares !== want) {
+    E.fares = want;
+    if (!want) {
+      if (G?.H) toast(G.H, 'Taxi off duty.');
+    } else if (!E.fareState) callFare(E, G, geometry(G));
+    else if (G?.H) toast(G.H, 'Taxi on duty. Lights go round.');
+  }
+  return E.fares;
+}
+
 export function toggleFareDuty(E, G) {
-  if (!E || !G) return false;
-  const cab = G.inCar;
-  if (E.fares) {
-    Object.assign(E, { fares: false, fareState: null });
-    G.H?.toast?.('Fare duty off.');
-    return false;
-  }
-  if (!isCab(cab)) {
-    G.H?.toast?.('Fares pay in a taxi. Find a yellow cab.');
-    return false;
-  }
-  if (E.fareState) {
-    G.H?.toast?.(describeFare(E.fareState));
-  } else {
-    const rider = summonRider(G, cab);
-    if (!rider) {
-      G.H?.toast?.('No rider on this block.');
-      return false;
-    }
-    E.fareState = waiting(rider);
-    G.sound?.chime?.();
-    G.H?.toast?.('Fare duty on. A rider waves nearby.');
-    G.spawnFareMarker?.();
-  }
-  E.fares = true;
-  return true;
+  if (cabReady(G)) return setFares(E, !E.fares, G);
+  if (G?.H) toast(G.H, 'You need a taxi to run fares.');
+  return false;
 }
 
-// Cash over, rider out, the next one already waving.
-function settle(E, G, cab) {
-  const s = E.fareState, rider = summonRider(G, cab);
-  addMoney(E, farePay(s.dist), G.H);
-  G.sound?.chime?.();
-  G.H?.toast?.('Fare paid.');
-  if (s.ped) Object.assign(s.ped, { fare: false, riding: false, taxi: null });
-  E.fareState = rider ? waiting(rider) : null;
-  E.fares = !!rider;
-  G.spawnFareMarker?.();
-  G.saveSoon?.();
-}
-
-/** Pick up, ride, pay, repeat — one step per tick. */
+// One tick of the meter: wait, ride, pay, next fare.
 export function updateFares(E, G, dt) {
-  const s = E?.fareState;
-  if (!s || !G || (G.screen && G.screen !== 'play')) return;
-  const cab = G.inCar, speed = cab ? Math.abs(cab.speed) : 0;
-
-  if (s.phase === 'pickup') {
-    const ped = s.ped;
-    // A rider who went down or boarded another cab ends the shift.
-    if (!ped || ped.state === 'down' || ped.riding) {
-      Object.assign(E, { fareState: null, fares: false });
-      return;
+  const F = E?.fareState;
+  if (!E?.fares || !F) return null;
+  const me = geometry(G);
+  const cab = cabReady(G) ? G.inCar : null;
+  switch (F.stage) {
+    case 'await': {
+      const ped = F.ped;
+      if (!ped || ped.state === 'down' || !ped.pos) {
+        F.ped = G?.spawnFare?.(me.x + 20, me.z + 20) || null;
+        return F;
+      }
+      const reach = dist(me, ped.pos);
+      if (cab && reach <= PICKUP && me.speed <= STOPPED) {
+        Object.assign(ped, { fare: true, state: 'ride', riding: true, taxi: cab, speed: 0 });
+        if (ped.mesh) ped.mesh.visible = false;
+        if (ped.shadow) ped.shadow.visible = false;
+        F.dest = w(G, ped.pos);
+        F.fare = F.paid = farePay(F.dest.dist);
+        Object.assign(F, { stage: 'ride', dist: F.dest.dist, waited: 0 });
+        if (G?.H) toast(G.H, `Passenger aboard. ${Math.round(F.dist)} m to the drop.`);
+        G?.sound?.chime?.();
+      } else if (cab && reach <= PICKUP * 2.5 && (F.waited += dt) > 6) {
+        F.waited = 0;
+        if (G?.H) toast(G.H, 'Roll up and stop to pick them up.');
+      }
+      return F;
     }
-    Object.assign(s, { x: ped.pos.x, z: ped.pos.z });
-    if (!cab || speed >= STOPPED || gap(ped.pos, cab) > ECON.farePickupDist) return;
-    const dest = pickDestination(G.W, G, cab);
-    if (!dest) return;
-    const dist = Math.round(gap(dest, cab));
-    // Aboard: the marker jumps to the drop-off and the meter counts the run.
-    Object.assign(ped, { taxi: cab, riding: true, state: 'ride', fare: true });
-    E.fareState = Object.assign(s, { phase: 'ride', x: dest.x, z: dest.z, dest, dist });
-    G.sound?.honk?.();
-    G.spawnFareMarker?.();
-    G.H?.toast?.('Fare aboard. Follow the gold marker.');
-    return;
+    case 'ride': {
+      if (!cab) {
+        Object.assign(F, { stage: 'abandoned', waited: 0 });
+        return F;
+      }
+      if (F.ped?.taxi) F.ped.pos.set(cab.x, 0, cab.z);
+      F.left = dist(me, F.dest);
+      if (F.left > DROP || me.speed > STOPPED) return F;
+      addMoney(E, F.paid, G?.H);
+      q(F.ped, cab);
+      if (G?.H) toast(G.H, `Fare paid: ${bank(F.paid)}`);
+      G?.sound?.jingle?.(true);
+      G?.milestone?.('fare');
+      E.fareState = null;
+      if (E.fares) callFare(E, G, me);
+      return null;
+    }
+    default: {
+      // Abandoned midway: the passenger waits until the cab is back on duty.
+      if (cab || (F.waited += dt) > 4) {
+        q(F.ped, cab);
+        Object.assign(F, { stage: 'await', dest: null, waited: 0 });
+        if (cab && G?.H) toast(G.H, 'Fare back on the kerb.');
+      }
+      return F;
+    }
   }
-
-  if (!s.dest) {
-    E.fareState = null;
-    return;
-  }
-  const dist = cab ? gap(s.dest, cab) : s.dist;
-  Object.assign(s, { x: s.dest.x, z: s.dest.z, dist: Math.round(dist) });
-  if (cab && speed < STOPPED && dist <= ECON.farePickupDist + 1) settle(E, G, cab);
 }
 
-/** The gold dot the minimap draws while a fare is running. */
-export function fareMarker(E) {
-  const s = E?.fareState;
-  return s ? { x: s.x, z: s.z, kind: s.phase === 'pickup' ? 'farePickup' : 'fareDrop' } : null;
+// What the minimap draws for the meter, or null.
+export function fareMarker(E, G) {
+  const F = E?.fareState;
+  if (!F || !E.fares) return null;
+  const me = geometry(G);
+  if (F.stage === 'await' && F.ped?.pos) return { kind: 'fare', x: F.ped.pos.x, z: F.ped.pos.z, dist: dist(me, F.ped.pos) };
+  if (F.dest) return { kind: 'destination', x: F.dest.x, z: F.dest.z, dist: dist(me, F.dest), pay: F.paid };
+  return null;
 }
 
-// ---- Save file: localStorage can throw on file://, so every call is guarded ----
+// ------------------------------------------------------------------ save
 
-const store = () => {
+// localStorage when the browser allows it (sandboxed file:// throws), else null.
+function store() {
   try {
-    return window.localStorage || null;
-  } catch {
+    const ls = window.localStorage;
+    if (!ls) return null;
+    ls.setItem('__sb_probe__', '1');
+    ls.removeItem('__sb_probe__');
+    return ls;
+  } catch (err) {
+    return null;
+  }
+}
+
+const read = (ls) => {
+  try {
+    const d = JSON.parse(ls.getItem(ECO.saveKey) || 'null');
+    return d && typeof d === 'object' ? d : null;
+  } catch (err) {
     return null;
   }
 };
 
-const count = (v, fallback, top) => Math.max(0, Math.min(top, Math.round(Number.isFinite(v) ? v : fallback)));
-
 export function saveGame(G) {
-  const box = store();
-  if (!G || !box) return false;
+  const ls = store();
+  if (!ls || !G) return false;
+  const P = G.P || {};
   const data = {
-    money: count(G.E?.money, ECON.start, 9e6),
-    missionIndex: count(G.M?.index, 0, 3),
-    rifle: !!G.P?.rifle,
-    ammo: count(G.P?.ammo, 0, 9999),
-    armor: count(G.P?.armor, 0, CAP),
-    playtime: count(G.time, 0, 9e6),
+    money: Math.max(0, Math.round(G.E?.money || 0)),
+    missionIndex: clamp(((G.M?.index | 0) || 0) + (G.M?.active ? 1 : 0), 0, 3),
+    rifle: !!P.rifle,
+    ammo: Math.max(0, P.ammo | 0),
+    armor: Math.max(0, P.armor | 0),
+    playtime: Math.max(0, Math.round(G.playtime || G.time || 0)),
   };
   try {
-    box.setItem(ECON.saveKey, JSON.stringify(data));
-    if (G.E) G.E.savedAt = G.time || 0;
+    ls.setItem(ECO.saveKey, JSON.stringify(data));
     return true;
-  } catch {
+  } catch (err) {
     return false;
   }
 }
 
 export function loadGame() {
-  let data = null;
-  try {
-    const raw = store()?.getItem(ECON.saveKey);
-    data = raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-  if (!data || typeof data !== 'object') return null;
-  // Older or hand-edited slots fall back to the starting wallet field by field.
+  const ls = store();
+  const d = ls && read(ls);
+  if (!d) return null;
   return {
-    money: count(data.money, ECON.start, 9e6),
-    missionIndex: count(data.missionIndex, 0, 3),
-    rifle: !!data.rifle,
-    ammo: count(data.ammo, 0, 9999),
-    armor: count(data.armor, 0, CAP),
-    playtime: count(data.playtime, 0, 9e6),
+    money: Math.max(0, Number(d.money) || 0),
+    missionIndex: clamp(Number(d.missionIndex) | 0, 0, 3),
+    rifle: !!d.rifle,
+    ammo: Math.max(0, Number(d.ammo) | 0),
+    armor: clamp(Number(d.armor) | 0, 0, 100),
+    playtime: Math.max(0, Number(d.playtime) | 0),
+    savedAt: Number(d.savedAt) || 0,
   };
 }
 
 export function clearSave() {
+  const ls = store();
+  if (!ls) return false;
   try {
-    store()?.removeItem(ECON.saveKey);
+    ls.removeItem(ECO.saveKey);
     return true;
-  } catch {
+  } catch (err) {
     return false;
   }
 }
 
-// Every 10 s of play, plus at milestones through G.saveSoon.
-export function autosave(G) {
-  if (!G?.E || (G.time || 0) - (G.E.savedAt || 0) < ECON.saveEvery) return false;
+// Autosave beat: once every ten seconds of play.
+export function dueSave(E, G, dt) {
+  if (!E || !G) return false;
+  if ((E.saveT = (E.saveT || 0) + dt) < 10) return false;
+  E.saveT = 0;
   return saveGame(G);
 }
 
-/** Busted and Wasted both bill you; the wallet never goes negative. */
-export function chargeFee(E, amount, H) {
-  if (!E) return 0;
-  const fee = Math.min(E.money, Math.max(0, Math.round(amount)));
-  E.money -= fee;
-  if (fee > 0) H?.toast?.(`-$${fee}`);
-  return fee;
+// Pause-panel line about the file on disk.
+export function saveSummary() {
+  const d = loadGame();
+  const mmss = (t) => `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+  return d ? `Saved: ${bank(d.money)} · job ${Math.min(d.missionIndex + 1, 3)} of 3 · ${mmss(d.playtime)} played` : 'No save yet. The bay forgets fast.';
+}
+
+// Local toast, so the counter works even before the HUD is wired.
+function toast(H, txt) {
+  if (!H) return;
+  if (typeof H.toast === 'function') return void H.toast(txt);
+  const box = H.toasts;
+  if (!box) return;
+  const row = document.createElement('div');
+  row.className = 'toast';
+  row.textContent = txt;
+  box.appendChild(row);
+  while (box.children.length > 3) box.removeChild(box.firstChild);
+  setTimeout(() => row.remove(), 2500);
 }
