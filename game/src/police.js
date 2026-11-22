@@ -1,501 +1,288 @@
-// Solara Bay — the wanted level and the people who answer it.
-// Stars climb with crime, cruisers merge onto the avenues, officers bail out to shoot,
-// a roadblock goes up at four, and it all cools off when nobody can see Vesper.
-
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { C, material } from './palette.js';
-import { makeCar } from './car.js';
+import { makeCar, updateCarDrive, addCarToScene } from './car.js';
+import { resolveMove } from './world.js';
 
-const WANTED = CONFIG.wanted;
-const HEAT = CONFIG.police;
-const FOOT = HEAT.foot;
-const CRUISER = CONFIG.car.kinds.police;
-const LIMIT = CONFIG.world.half;
-const SEA = CONFIG.world.sea;
+// Wanted level + police AI: decay by sight, cruisers, officers on foot, roadblocks.
+const { police: { foot: FT, carChase: CH, roadblock: BL, count: BAND }, wanted: WANTED, world: { half: HALF } } = CONFIG;
+const MAX = 5, SEE = 12, LOSE = 170, TAU = 6.2832;
+const gap = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const rand = (G, a, b) => (G && G.rng ? G.rng.range(a, b) : a + Math.random() * (b - a));
+/** A crew's or officer's eyes: the car's x/z for cruisers, the vector for officers. */
+const eye = (c) => (c.pos ? c.pos : c.car ? { x: c.car.x, z: c.car.z } : { x: c.x, z: c.z });
+const turn = (a, t) => { const d = (t - a) % TAU; return d > Math.PI ? d - TAU : d < -Math.PI ? d + TAU : d; };
+const mesh = (geo, mat) => new THREE.Mesh(geo, mat);
 
-// Numbers this module lives by.
-const MAX_STARS = 5;
-const SPAWN_NEAR = 60; // m ahead of her a fresh cruiser merges in
-const SPAWN_FAR = 80; // m, the far end of that window
-const LEAD_TIME = 3; // s of intercept lead once the target is close
-const LEAD_NEAR = 40; // m: the lead starts inside this
-const RAM_SPEED = 7; // m/s of cruiser speed that counts as a ram
-const RAM_DMG = HEAT.car.ram;
-const RAM_KNOCK = 6; // m/s she gets shoved to
-const BAIL_DIST = 6; // m: a stopped cruiser this close opens its doors
-const BAIL_SPEED = 2; // m/s: below this the cruiser counts as stopped
-const FOOT_STOP_MIN = 8;
-const FOOT_STOP_MAX = 14;
-const FOOT_KEEP = 70; // m: further off than this, an officer is relieved
-const CMD_DELAY = 1.2; // s before a fresh officer opens fire
-const DOWN_HOLD = 12; // s a downed officer stays on the asphalt
+/** LOS: segment against every building footprint; false when a facade blocks. */
+export function clearSight(W, from, to) {
+  const dx = to.x - from.x, dz = to.z - from.z;
+  for (const b of W.colliders || []) {
+    let n = 0, f = 1, cut = false;
+    for (const [o, d, lo, hi] of [[from.x, dx, b.minX, b.maxX], [from.z, dz, b.minZ, b.maxZ]]) {
+      if (Math.abs(d) < 1e-6) { cut = cut || o < lo || o > hi; continue; }
+      let a = (lo - o) / d, c = (hi - o) / d;
+      if (a > c) [a, c] = [c, a];
+      if ((n = Math.max(n, a)) > (f = Math.min(f, c))) cut = true;
+    }
+    if (!cut && n < 0.97 && f > 0.03) return false;
+  }
+  return true;
+}
+const sees = (c, W, P) => gap(eye(c), P.pos) < SEE || clearSight(W, eye(c), P.pos);
 
-// ------------------------------------------------------------------ state
-
-/** The wanted record: stars, the no-sight stopwatch, and everyone on the payroll. */
-export function initPolice(W, city, rng) {
-  return { stars: 0, noSeeT: 0, seenT: 0, cars: [], foot: [], roadblock: null, roadblockT: 0, W, city, rng, merged: 0, sinceDrop: 0, sinceBail: 0 };
+/** Red and blue emissive plates; the flash swaps which one is lit. */
+function lightbar() {
+  const plate = (hex, x) => { const m = mesh(new THREE.BoxGeometry(0.42, 0.16, 0.3), new THREE.MeshBasicMaterial({ color: hex })); m.position.x = x; return m; };
+  const a = plate(C.barRed, -0.25), b = plate(C.barBlue, 0.25), rig = new THREE.Group();
+  rig.add(a, b);
+  return { rig, a, b, red: a.material, blue: b.material, off: new THREE.MeshBasicMaterial({ color: 0x5a6068 }) };
+}
+function attachBar(car) {
+  if (car.mesh.userData.car && car.mesh.userData.car.lightbar) return { shared: car.mesh.userData.car.lightbar };
+  const bar = lightbar();
+  bar.rig.position.set(0, 1.62, 0.1);
+  car.mesh.add(bar.rig);
+  return bar;
+}
+function flash(PO, t) {
+  const beat = Math.floor(t * 4.5) % 2 === 0, lit = PO.stars > 0;
+  for (const bar of PO.cars.map((c) => c.bar)) {
+    if (!bar) continue;
+    if (bar.shared) bar.shared.material.color.setHex(lit ? (beat ? C.barRed : C.barBlue) : 0x5a6068);
+    else { bar.a.material = lit && beat ? bar.red : bar.off; bar.b.material = lit && !beat ? bar.blue : bar.off; }
+  }
 }
 
-const countsFor = (s) => HEAT.perStar[Math.max(1, Math.min(MAX_STARS, s))] || HEAT.perStar[1];
-const gap = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const arcTo = (from, to) => {
-  const d = (to - from) % (Math.PI * 2);
-  return d > Math.PI ? d - Math.PI * 2 : d < -Math.PI ? d + Math.PI * 2 : d;
-};
-const retire = (PO, row, key) => {
-  PO.W.scene.remove(row.mesh || row.car.mesh);
-  const i = PO[key || 'cars'].indexOf(row);
-  if (i >= 0) PO[key || 'cars'].splice(i, 1);
-};
+/** Nearest avenue centre, so cruisers join the grid, not the grass. */
+function lane(x, z) {
+  let best = { x, z }, n = 1e9;
+  for (let l = -160; l <= 160; l += 80) {
+    if (Math.abs(x - l) < n) { n = Math.abs(x - l); best = { x: l, z: clamp(z, -HALF + 8, HALF - 8) }; }
+    if (Math.abs(z - l) < n) { n = Math.abs(z - l); best = { x: clamp(x, -HALF + 8, HALF - 8), z: l }; }
+  }
+  return best;
+}
+/** A street point 60-80 m out: where a cruiser merges in toward her. */
+function mergePoint(G, px, pz) {
+  for (let i = 0; i < 6; i += 1) {
+    const a = G.rng.angle(), r = rand(G, CH.spawnMin, CH.spawnMax);
+    const s = lane(clamp(px + Math.cos(a) * r, -HALF + 6, HALF - 6), clamp(pz + Math.sin(a) * r, -HALF + 6, HALF - 6));
+    if (gap(s, { x: px, z: pz }) >= 50) return s;
+  }
+  return lane(px + 70, pz);
+}
 
-/** Crime is loud: stars go up, the stopwatch resets, the sirens start. */
+export function initPolice(W, city, rng) {
+  return { stars: 0, noSeeT: 0, cars: [], foot: [], roadblock: null, W, city, rng, time: 0, spawnT: 0, blockT: 0, siren: false };
+}
+/** Raise the level by n stars (cap 5), reset the clock, wake the sirens. */
 export function addStars(PO, n, G) {
-  if (!PO || n <= 0) return PO?.stars ?? 0;
-  const before = PO.stars | 0;
-  PO.stars = Math.min(MAX_STARS, before + Math.max(1, Math.round(n)));
-  PO.noSeeT = 0;
-  PO.seenT = 0;
-  G?.sound?.siren?.(true);
-  if (PO.stars !== before) G?.H?.toast?.(PO.stars >= MAX_STARS ? 'Five stars. The whole bay is looking.' : `Wanted: ${PO.stars} star${PO.stars > 1 ? 's' : ''}.`);
+  n = Math.min(MAX - PO.stars, Math.max(0, Math.floor(n || 0)));
+  if (!n) return PO.stars;
+  PO.stars += n; PO.noSeeT = PO.spawnT = 0;
+  if (!PO.siren) { PO.siren = true; G?.sound?.siren?.(true); }
   return PO.stars;
 }
-
-/** HUD read-out: is anyone actually on her? */
-export function wantedPoliced(PO) {
-  if (!PO || !PO.stars) return false;
-  return PO.cars.some((row) => !row.dead) || PO.foot.some((officer) => !officer.down);
-}
-
-/** Wipe the record: the station, the hospital and mission hand-offs call this. */
+/** Wipe the chase — a finished job pays off the heat. */
 export function clearPolice(PO, G) {
   if (!PO) return PO;
-  for (const row of PO.cars) PO.W.scene.remove(row.car.mesh);
-  for (const officer of PO.foot) PO.W.scene.remove(officer.mesh);
-  Object.assign(PO, { stars: 0, noSeeT: 0, seenT: 0, cars: [], foot: [], roadblock: null, roadblockT: 0, sinceDrop: 0, sinceBail: 0 });
+  for (const c of (PO.cars || []).slice()) park(PO, c);
+  for (const f of (PO.foot || []).slice()) retire(PO, f);
+  Object.assign(PO, { stars: 0, noSeeT: 0, siren: false, roadblock: null });
   G?.sound?.siren?.(false);
   return PO;
 }
 
-// ------------------------------------------------------------------ shared maths
-
-// The AABB sweep: both axes, else one, and report the wall.
-function sweep(W, pos, r, dx, dz) {
-  const solid = (x, z) => W.colliders.some((b) => x + r > b.minX && x - r < b.maxX && z + r > b.minZ && z - r < b.maxZ);
-  if (!solid(pos.x + dx, pos.z + dz)) return { x: pos.x + dx, z: pos.z + dz, blocked: false };
-  if (!solid(pos.x + dx, pos.z)) return { x: pos.x + dx, z: pos.z, blocked: true };
-  if (!solid(pos.x, pos.z + dz)) return { x: pos.x, z: pos.z + dz, blocked: true };
-  return { x: pos.x, z: pos.z, blocked: true };
+function spawnCruiser(PO, G) {
+  const at = mergePoint(G, G.P.pos.x, G.P.pos.z);
+  const car = addCarToScene(PO.W, makeCar('police', at.x, at.z, rand(G, 0, TAU), C.copbody));
+  Object.assign(car, { speed: 0, occupant: 'npc', police: true });
+  PO.cars.push({ car, bar: attachBar(car), dead: false, stuckT: 0, ramCool: 0, dropped: false });
+}
+function park(PO, crew) {
+  const car = crew.car;
+  if (car.mesh.parent) car.mesh.parent.remove(car.mesh);
+  Object.assign(car, { police: false, siren: false, player: false });
+  PO.cars.splice(PO.cars.indexOf(crew), 1);
+}
+/** Her spot pushed along her heading by the lead seconds. */
+function intercept(P, car) {
+  const d = car ? Math.min(car.speed * CH.lead, 60) : 0;
+  return { x: P.pos.x + (car ? Math.sin(car.heading) * d : 0), z: P.pos.z + (car ? Math.cos(car.heading) * d : 0) };
+}
+/** Ram: 10 car damage, a speed knock, and a bite out of her. */
+function ram(crew, G, dt) {
+  const car = crew.car, mine = G.inCar;
+  crew.ramCool = Math.max(0, crew.ramCool - dt);
+  if (!mine || mine.wrecked || crew.ramCool > 0 || gap(car, mine) > car.radius + mine.radius + 1.4) return;
+  crew.ramCool = 0.9;
+  mine.hp = Math.max(0, mine.hp - 10);
+  mine.speed = mine.speed * 0.55 + Math.sign(car.speed || 1) * 2.2;
+  car.speed *= -0.3;
+  G.sound?.crash?.(); G.effects?.flashDamage?.();
+  G.damagePlayer?.(CH.ram, G);
+  if (mine.hp <= 0) G.explodeCar?.(mine);
+}
+function disembark(PO, G, car) {
+  const s = Math.sign(Math.cos(car.heading)) || 1;
+  const at = resolveMove(PO.W, car.x, car.z, 0.4, Math.cos(car.heading) * s * 2.2, -Math.sin(car.heading) * s * 2.2);
+  spawnFoot(PO, G, at.x, at.z);
+}
+function drive(PO, crew, G, dt) {
+  const car = crew.car, aim = intercept(G.P, G.inCar), away = gap(car, aim);
+  const off = turn(car.heading, Math.atan2(aim.x - car.x, aim.z - car.z)), a = Math.abs(off);
+  crew.stuckT = Math.abs(car.speed) < 0.8 ? crew.stuckT + dt : 0;
+  let gas = a > 2.2 ? -0.8 : a > 1.1 ? 0.45 : 1;
+  if (crew.stuckT > 1.6) { gas = -1; if (crew.stuckT > 3) crew.stuckT = 0; }
+  updateCarDrive(car, gas, clamp(-off * 2.4, -1, 1), away < 9 && Math.abs(car.speed) > 12 && a < 0.3, dt, PO.W, G);
+  car.police = true;
+  if (car.wrecked) { crew.dead = true; return; }
+  if (away < 30) ram(crew, G, dt);
+  if (!crew.dropped && !G.inCar && away < 26) { crew.dropped = true; disembark(PO, G, car); }
 }
 
-// Can a point (x,z) hold a 2.2 m hull without touching a building?
-const insideWall = (W, x, z, pad) => W.colliders.some((b) => x + pad > b.minX && x - pad < b.maxX && z + pad > b.minZ && z - pad < b.maxZ);
-
-// A marching XZ ray: cheap line of sight against the boxes, a 4 m step at a time.
-const clearShot = (W, a, b) => {
-  const steps = Math.ceil((gap(a, b) || 1) / 4);
-  for (let i = 1; i < steps; i += 1) {
-    const x = a.x + ((b.x - a.x) * i) / steps;
-    const z = a.z + ((b.z - a.z) * i) / steps;
-    if (W.colliders.some((box) => x > box.minX && x < box.maxX && z > box.minZ && z < box.maxZ)) return false;
+/** Navy trousers, pale shirt, peaked cap. */
+function officer(G) {
+  const navy = material(C.coptrim), pup = material(C.skin[G.rng.int(0, C.skin.length - 1)]);
+  const box = (w, h, d, mat, y, x) => { const m = mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x || 0, y, 0); m.castShadow = true; return m; };
+  const g = new THREE.Group(), legs = [-0.15, 0.15].map((x) => box(0.19, 0.72, 0.22, navy, 0.36, x));
+  g.add(box(0.56, 0.66, 0.32, material(0xdfe7ef), 1.13), box(0.5, 0.26, 0.3, navy, 0.78), box(0.26, 0.26, 0.26, pup, 1.62), box(0.3, 0.1, 0.32, navy, 1.77), ...legs);
+  return { g, legs };
+}
+function spawnFoot(PO, G, x, z) {
+  const made = officer(G);
+  made.g.position.set(x, 0, z);
+  PO.W.scene.add(made.g);
+  const cool = rand(G, 0.2, FT.fireEvery);
+  PO.foot.push({ mesh: made.g, legs: made.legs, pos: new THREE.Vector3(x, 0, z), hp: FT.hp, yaw: 0, walkT: 0, cool, strafe: rand(G, -1, 1) > 0 ? 1 : -1, deadT: 0, strafeT: 0 });
+}
+function retire(PO, cop) {
+  if (cop.mesh.parent) cop.mesh.parent.remove(cop.mesh);
+  PO.foot.splice(PO.foot.indexOf(cop), 1);
+}
+/** Hit an officer; true when this call puts him down. */
+export function damageCop(PO, cop, n, G) {
+  if (!cop || cop.down) return false;
+  if ((cop.hp -= Math.max(0, n || 0)) > 0) return false;
+  Object.assign(cop, { down: true, deadT: 40 });
+  cop.mesh.rotation.set(Math.PI / 2, cop.yaw, 0);
+  cop.mesh.position.y = 0.28;
+  if (G) {
+    Object.assign(G, { alarm: 1, alarmX: cop.pos.x, alarmZ: cop.pos.z });
+    G.sound?.chime?.();
+    if (PO.stars < 3) addStars(PO, WANTED.starsFor.killCop, G);
   }
   return true;
-};
-
-// The road graph the department was handed, for path lookups.
-let PO_ROADS = { nodes: [] };
-
-// A lane-level detour: the nearest junction plus the ones after it, walked breath-first
-// over the node list. Drop-through points, so a wedged cruiser can loop a block.
-function lanePath(start, end) {
-  const { nodes } = PO_ROADS;
-  const from = nodes.indexOf(start);
-  const to = nodes.indexOf(end);
-  if (from < 0 || to < 0) return [];
-  const prev = new Map([[from, -1]]);
-  const queue = [from];
-  while (queue.length && !prev.has(to)) {
-    const i = queue.shift();
-    for (const j of nodes[i].neighbors) if (!prev.has(j)) (prev.set(j, i), queue.push(j));
-  }
-  if (!prev.has(to)) return [];
-  const out = [];
-  for (let i = to; i !== from && i >= 0; i = prev.get(i)) out.unshift(nodes[i]);
-  return out;
 }
-
-// Time-based strobe: red half a second, blue the other half.
-function flashBar(car, dt) {
-  const bars = car.mesh.userData.car;
-  if (!bars || !bars.barRed) return;
-  car.flashT = ((car.flashT || 0) + dt) % 0.6;
-  const red = car.flashT < 0.3;
-  bars.barRed.material.emissiveIntensity = red ? 1.6 : 0.06;
-  bars.barBlue.material.emissiveIntensity = red ? 0.06 : 1.6;
-}
-
-// ------------------------------------------------------------------ officers on foot
-
-// One officer's walker: navy shirt and cap, dark trousers, a badge and a pistol arm.
-function dressOfficer(rng) {
-  const group = new THREE.Group();
-  const navy = material(C.coptrim);
-  const trousers = material(0x22304a);
-  const dark = material(0x151a22);
-  const put = (w, h, d, mat, x, y, z = 0) => {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    mesh.position.set(x, y, z);
-    mesh.castShadow = true;
-    group.add(mesh);
-    return mesh;
-  };
-  put(0.5, 0.6, 0.3, navy, 0, 1.14);
-  put(0.46, 0.1, 0.3, dark, 0, 0.84);
-  put(0.1, 0.1, 0.04, material(0xd9c25a, { flat: true }), -0.13, 1.25, 0.16);
-  put(0.28, 0.3, 0.28, material(rng.pick(C.skin)), 0, 1.62);
-  put(0.31, 0.1, 0.31, navy, 0, 1.81);
-  put(0.29, 0.04, 0.12, dark, 0, 1.77, 0.18);
-  const legs = [-1, 1].map((side) => {
-    const hip = new THREE.Group();
-    hip.position.set(side * 0.12, 0.84, 0);
-    hip.add(put(0.17, 0.82, 0.19, trousers, 0, -0.41));
-    group.add(hip);
-    return hip;
-  });
-  const arms = [-1, 1].map((side) => {
-    const shoulder = new THREE.Group();
-    shoulder.position.set(side * 0.3, 1.36, 0);
-    shoulder.add(put(0.12, 0.5, 0.14, navy, 0, -0.24));
-    group.add(shoulder);
-    return shoulder;
-  });
-  const pistol = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.26), material(0x24282e));
-  pistol.position.set(0, -0.5, 0.16);
-  arms[1].add(pistol);
-  arms[1].rotation.x = -1.25;
-  return { group, legs, arms };
-}
-
-// Field kit: drawn, lit, on the list. The mesh carries the crew flag for the HUD.
-function spawnOfficer(PO, x, z, yaw) {
-  const parts = dressOfficer(PO.rng);
-  parts.group.position.set(x, 0, z);
-  parts.group.rotation.y = yaw;
-  parts.group.userData.cop = true;
-  PO.W.scene.add(parts.group);
-  const officer = { mesh: parts.group, parts, pos: new THREE.Vector3(x, 0, z), yaw, hp: FOOT.hp, down: false, deadT: 0, walkT: 0, strafeT: PO.rng.range(1.4, 3), strafe: PO.rng.chance(0.5) ? 1 : -1, cooldown: CMD_DELAY };
-  PO.foot.push(officer);
-  return officer;
-}
-
-// What Vesper's bullets can trace to.
-const copTargets = (PO) => PO.foot.filter((o) => !o.down).map((o) => ({ x: o.pos.x, z: o.pos.z, y: 1.1, cop: o, radius: 0.6 }));
-
-/** The player's bullet lands: an officer drops and the street earns three stars. */
-export function damageCop(PO, officer, amount, G) {
-  // The firing trace may hand over the wrapper or the officer itself; take either.
-  const cop = officer?.cop || officer;
-  if (!PO || !cop?.mesh) return false;
-  const target = cop;
-  if (target.down || !PO.foot.includes(target)) return false;
-  target.hp -= amount || 0;
-  if (target.hp > 0) return false;
-  Object.assign(target, { down: true, deadT: DOWN_HOLD });
-  target.mesh.rotation.z = Math.PI / 2;
-  target.mesh.position.y = 0.3;
-  addStars(PO, WANTED.killCop, G);
-  return true;
-}
-
-// ------------------------------------------------------------------ cruisers
-
-function buildCruiser(PO, x, z, heading) {
-  const car = makeCar('police', x, z, heading, C.copbody);
-  Object.assign(car, { occupant: 'npc', siren: true, block: false, stuckT: 0, stuck: false });
-  car.retarget = 0;
-  PO_ROADS = PO.W.roads;
-  PO.W.scene.add(car.mesh);
-  const row = { car, dead: false, block: false };
-  PO.cars.push(row);
-  return row;
-}
-
-// A junction or lane point SPAWN_NEAR..SPAWN_FAR off her, clear of walls.
-function chooseMergeSpot(PO, at) {
-  const { W, rng } = PO;
-  const pool = W.roads.nodes.filter((n) => gap(n, at) > 30).sort((a, b) => gap(a, at) - gap(b, at)).slice(0, 8);
-  for (let i = 0; i < 14; i += 1) {
-    const node = pool.length && i % 2 === 0 ? rng.pick(pool) : null;
-    const x = clamp(node ? node.x : at.x + rng.range(-70, 70), SEA + 8, LIMIT - 8);
-    const z = clamp(node ? node.z : at.z + rng.range(-70, 70), -LIMIT + 8, LIMIT - 8);
-    const d = Math.hypot(x - at.x, z - at.z);
-    if (d >= SPAWN_NEAR && d <= SPAWN_FAR && !insideWall(W, x, z, 2.2)) return { x, z };
-  }
-  return null;
-}
-
-// Bring one cruiser on, one junction further in, so it rolls toward her.
-function mergeCruiser(PO, at) {
-  const spot = chooseMergeSpot(PO, at);
-  if (!spot) return null;
-  const node = PO.W.roads.at(spot.x, spot.z);
-  return buildCruiser(PO, node.x, node.z, Math.atan2(at.x - node.x, at.z - node.z));
-}
-
-// Her path, three seconds ahead: the point the cruiser steers for.
-function interceptPoint(G, at) {
-  const me = G.inCar && !G.inCar.wrecked ? G.inCar : null;
-  return me ? { x: at.x + Math.sin(me.heading) * me.speed * LEAD_TIME, z: at.z + Math.cos(me.heading) * me.speed * LEAD_TIME } : at;
-}
-
-// One cruiser's frame: steer at the intercept on the road graph, full throttle, ram on contact.
-function driveCruiser(PO, G, row, dt, at) {
-  const car = row.car;
-  const aim = interceptPoint(G, at);
-  row.retarget -= dt;
-  if (!row.targetXY || gap(row.targetXY, aim) > 10 || row.retarget <= 0) {
-    const there = PO.W.roads.at(aim.x, aim.z);
-    Object.assign(row, { targetXY: { x: there.x, z: there.z }, path: row.stuck ? lanePath(PO.W.roads.at(car.x, car.z), there) : null, retarget: 1.5 });
-  }
-  while (row.path && row.path.length && gap(car, row.path[0]) < 7) row.path.shift();
-  const goal = gap(car, aim) < LEAD_NEAR ? aim : row.path && row.path.length ? row.path[0] : row.targetXY;
-  const steer = clamp(arcTo(car.heading, Math.atan2(goal.x - car.x, goal.z - car.z)) * 2.1, -1, 1);
-
-  car.speed = Math.min(CRUISER.max, car.speed + CRUISER.accel * dt);
-  car.heading += steer * CRUISER.turn * Math.min(1, car.speed / 5) * dt;
-  car.steerVis = steer;
-  const moved = sweep(PO.W, car, car.radius, Math.sin(car.heading) * car.speed * dt, Math.cos(car.heading) * car.speed * dt);
-  Object.assign(car, { x: clamp(moved.x, -LIMIT, LIMIT), z: clamp(moved.z, -LIMIT, LIMIT) });
-  if (moved.blocked) car.speed = Math.max(1.5, car.speed * 0.55);
-  row.stuckT = moved.blocked ? row.stuckT + dt : 0;
-  row.stuck = row.stuckT > 1.2;
-  car.wheelT += car.speed * dt * 1.6;
-  for (const wheel of car.mesh.userData.car.wheels) wheel.rotation.x = car.wheelT;
-  car.mesh.position.set(car.x, 0, car.z);
-  car.mesh.rotation.y = car.heading;
-  flashBar(car, dt);
-
-  // Ram: her hull takes ten points and a shove along the cruiser's nose.
-  const me = G.inCar;
-  if (!me || me.wrecked || car.speed < RAM_SPEED || gap(car, me) > car.radius + me.radius + 0.4) return;
-  me.hp -= RAM_DMG;
-  me.speed = Math.min(RAM_KNOCK, Math.abs(me.speed) + Math.abs(Math.sin(car.heading) * car.speed * 0.35)) * Math.sign(me.speed || 1);
-  car.speed *= 0.6;
-  G.sound?.crash?.();
-  G.effects?.flashDamage?.();
-  if (me.hp <= 0) (Object.assign(me, { hp: 0, wrecked: true }), G.explodeCar?.(me), G.effects?.spawnExplosion?.({ x: me.x, y: 1, z: me.z }));
-}
-
-// ------------------------------------------------------------------ roadblock
-
-// Two cruisers parked across the lane HEAT.roadblockAhead ahead, once per HEAT.roadblockEvery.
-function raiseRoadblock(PO, G) {
-  const heading = G.inCar && !G.inCar.wrecked ? G.inCar.heading : G.P.yaw || 0;
-  const fwd = { x: Math.sin(heading), z: Math.cos(heading) };
-  const right = { x: fwd.z, z: -fwd.x };
-  const at = { x: G.P.pos.x + fwd.x * HEAT.roadblockAhead, z: G.P.pos.z + fwd.z * HEAT.roadblockAhead };
-  if (Math.abs(at.x) > LIMIT - 20 || Math.abs(at.z) > LIMIT - 20) return;
-  const rows = [-3.2, 3.2].map((side) => {
-    const row = buildCruiser(PO, at.x + right.x * side, at.z + right.z * side, heading + Math.PI / 2);
-    row.block = true;
-    row.car.block = true;
-    return row;
-  });
-  Object.assign(PO, { roadblock: { x: at.x, z: at.z, rows }, roadblockT: HEAT.roadblockEvery });
-}
-
-// ------------------------------------------------------------------ head count
-
-// Match the table for this star level; roadblocks ride on top while the heat lasts.
-function trimToTable(PO) {
-  const [maxCars, maxFoot] = countsFor(PO.stars || 1);
-  let patrol = PO.cars.filter((row) => !row.block).length;
-  for (let i = PO.cars.length - 1; i >= 0 && patrol > Math.max(0, maxCars); i -= 1) {
-    if (PO.cars[i].block) continue;
-    retire(PO, PO.cars[i]);
-    patrol -= 1;
-  }
-  if ((PO.stars | 0) < 4 && PO.roadblock) {
-    for (const row of PO.roadblock.rows) if (PO.cars.includes(row)) retire(PO, row);
-    Object.assign(PO, { roadblock: null, roadblockT: 0 });
-  }
-  const standing = PO.foot.filter((officer) => !officer.down);
-  while (standing.length > maxFoot) retire(PO, standing.shift(), 'foot');
-}
-
-// ------------------------------------------------------------------ the frame
-
-/** A cop who can see her this frame keeps the stars warm. */
-const anyOfficerSees = (PO, at) => PO.cars.some((row) => sees(PO, row.car, at)) || PO.foot.some((officer) => !officer.down && sees(PO, officer.pos, at));
-
-// 40 m of open air, or 12 m of anything at all.
-function sees(PO, pos, at) {
-  const d = gap(pos, at);
-  return d <= HEAT.seeRange && (d < 12 || clearShot(PO.W, pos, at));
-}
-
-// One officer on foot: close in, hold 8..14 m, strafe, fire every FOOT.fireEvery.
-function walkOfficer(PO, G, officer, at, d, dt) {
-  const los = clearShot(PO.W, officer.pos, at);
-  const want = Math.atan2(at.x - officer.pos.x, at.z - officer.pos.z);
-  officer.strafeT -= dt;
-  if (officer.strafeT <= 0) (officer.strafe *= -1), (officer.strafeT = PO.rng.range(1.4, 3));
-  const charge = d > FOOT_STOP_MIN ? 1 : d < FOOT_STOP_MAX - 8 ? -0.6 : 0;
-  const side = d < FOOT.range ? officer.strafe * 0.45 : 0;
-  const dx = Math.sin(want) * charge - Math.cos(want) * side;
-  const dz = Math.cos(want) * charge + Math.sin(want) * side;
-  const stepLen = (FOOT.run * dt) / Math.max(1, Math.hypot(dx, dz));
-  const moved = sweep(PO.W, officer.pos, 0.4, dx * stepLen, dz * stepLen);
-  const spot = moved.blocked ? sweep(PO.W, officer.pos, 0.4, -dz * stepLen, dx * stepLen) : moved;
-  officer.pos.x = spot.x;
-  officer.pos.z = spot.z;
-  officer.yaw += arcTo(officer.yaw, want) * Math.min(1, dt * 10);
-  officer.walkT += dt * (charge > 0 ? 9 : 3.5);
-  const swing = Math.sin(officer.walkT) * (charge > 0 ? 0.6 : 0.15);
-  officer.parts.legs[0].rotation.x = swing;
-  officer.parts.legs[1].rotation.x = -swing;
-  officer.mesh.position.set(officer.pos.x, 0, officer.pos.z);
-  officer.mesh.rotation.y = officer.yaw;
-
-  // Fire: muzzle, tracer, then 8..12 points off her.
-  officer.cooldown -= dt;
-  if (d < FOOT.range && los && officer.cooldown <= 0 && !G.P.dead) {
-    officer.cooldown = FOOT.fireEvery;
-    const from = { x: officer.pos.x, y: 1.45, z: officer.pos.z };
-    G.effects?.spawnMuzzle?.(from);
-    G.effects?.spawnTracer?.(from, { x: at.x, y: 1.2, z: at.z });
-    G.sound?.shot?.();
-    Object.assign(G, { alarm: 1, alarmX: from.x, alarmZ: from.z });
-    G.damagePlayer?.(PO.rng.int(FOOT.dmgMin, FOOT.dmgMax));
-  }
-}
-
-/** One fixed step of the whole department. */
-export function updatePolice(PO, G, dt) {
-  if (!PO || !G?.P) return PO;
-  const P = G.P;
-  const inCar = G.inCar && !G.inCar.wrecked ? G.inCar : null;
-  const at = inCar ? { x: inCar.x, z: inCar.z } : { x: P.pos.x, z: P.pos.z };
-  PO.sinceDrop += dt;
-  PO.sinceBail += dt;
-  PO.roadblockT = Math.max(0, PO.roadblockT - dt);
-
-  if (!PO.stars) {
-    if (PO.cars.length || PO.foot.length) trimToTable(PO);
-    return PO;
-  }
-
-  // The stopwatch: lose sight and the stars bleed off one at a time.
-  if (anyOfficerSees(PO, at)) {
-    PO.noSeeT = 0;
-    PO.seenT = 0;
-  } else {
-    PO.seenT += dt;
-    PO.noSeeT += dt;
-    if (PO.noSeeT >= (WANTED.decay[PO.stars] ?? WANTED.decay[1])) {
-      Object.assign(PO, { noSeeT: 0, seenT: 0, stars: PO.stars - 1 });
-      G.H?.toast?.(PO.stars ? 'Lost one star. Keep moving.' : 'The heat is off.');
-      if (!PO.stars) {
-        G.sound?.siren?.(false);
-        trimToTable(PO);
-        return PO;
-      }
-    }
-  }
-
-  // Fill the gaps in the head count.
-  const [wantCars, wantFoot] = countsFor(PO.stars);
-  if (PO.cars.filter((row) => !row.block && !row.dead).length < wantCars && PO.sinceDrop > 2.2) {
-    PO.sinceDrop = 0;
-    mergeCruiser(PO, at);
-  }
-  const onFoot = PO.foot.filter((officer) => !officer.down);
-  if (onFoot.length < wantFoot && PO.sinceBail > 3) {
-    PO.sinceBail = 0;
-    const near = PO.cars.filter((row) => !row.dead && !row.block && !row.car.wrecked).sort((a, b) => gap(a.car, at) - gap(b.car, at))[0];
-    if (near) {
-      const c = near.car;
-      const x = c.x + Math.cos(c.heading) * (2.2 + onFoot.length * 0.8);
-      const z = c.z - Math.sin(c.heading) * (2.2 + onFoot.length * 0.8);
-      if (!insideWall(PO.W, x, z, 1)) spawnOfficer(PO, clamp(x, -LIMIT, LIMIT), clamp(z, -LIMIT, LIMIT), c.heading);
-    }
-  }
-
-  // Roadblock at four and five stars, once per HEAT.roadblockEvery.
-  if (PO.stars >= 4 && !PO.roadblock && PO.roadblockT <= 0 && Math.abs(inCar ? inCar.speed : P.speed || 0) > 2) {
-    raiseRoadblock(PO, G);
-    G.H?.toast?.('Roadblock ahead. Find another way round.');
-  }
-
-  // Cruisers: drive, or park across the road and let the officers out.
-  for (let i = PO.cars.length - 1; i >= 0; i -= 1) {
-    const row = PO.cars[i];
-    const car = row.car;
-    if (!car || row.dead || car.wrecked) {
-      if (car) PO.W.scene.remove(car.mesh);
-      PO.cars.splice(i, 1);
-      continue;
-    }
-    const d = gap(car, at);
-    if (row.block) {
-      flashBar(car, dt);
-      car.speed = 0;
-      if (d > 30) {
-        PO.W.scene.remove(car.mesh);
-        PO.cars.splice(i, 1);
-        if (PO.roadblock?.rows.includes(row)) {
-          PO.roadblock = null;
-          PO.roadblockT = HEAT.roadblockEvery;
-        }
-      }
-      continue;
-    }
-    if (d > HEAT.car.dropDist) {
-      retire(PO, row);
-      continue;
-    }
-    driveCruiser(PO, G, row, dt, at);
-    // Bail-out: her on foot, a stopped cruiser within 6 m.
-    const standing = PO.foot.filter((officer) => !officer.down).length;
-    if (!inCar && standing < wantFoot && d < BAIL_DIST && Math.abs(car.speed) < BAIL_SPEED && PO.sinceBail > 1.5) {
-      PO.sinceBail = 0;
-      spawnOfficer(PO, clamp(car.x + Math.cos(car.heading) * 2.2, -LIMIT, LIMIT), clamp(car.z - Math.sin(car.heading) * 2.2, -LIMIT, LIMIT), car.heading);
-    }
-  }
-  trimToTable(PO);
-
-  // Officers on foot: close in, hold 8..14 m, strafe, fire every FOOT.fireEvery.
-  const eyeTarget = at;
-  for (let i = PO.foot.length - 1; i >= 0; i -= 1) {
-    const officer = PO.foot[i];
-    officer.deadT -= dt;
-    const d = gap(officer.pos, eyeTarget);
-    // Downed officers stay a while, then leave; walking ones are relieved if she outruns them.
-    if (officer.down) {
-      if (officer.deadT > 0) continue;
-      retire(PO, officer, 'foot');
-      continue;
-    }
-    if (d > FOOT_KEEP || !PO.stars) {
-      retire(PO, officer, 'foot');
-      continue;
-    }
-    walkOfficer(PO, G, officer, eyeTarget, d, dt);
-
-    // Cuffs: on foot, nearly done, and an officer inside arm's reach.
-    if (!inCar && !P.dead && P.hp <= FOOT.arrestHpBelow && d <= FOOT.arrestDist) {
-      Object.assign(PO, { stars: 0, noSeeT: 0 });
-      G.sound?.siren?.(false);
-      G.bust?.();
-      break;
-    }
-  }
-  return PO;
-}
-
-/** What the player's gun can hit: for the firing trace in main. */
 export function copShootTargets(PO) {
-  return copTargets(PO);
+  return PO ? PO.foot.filter((c) => !c.down).concat(PO.cars.filter((c) => !c.dead).map((c) => c.car)).filter((t) => t && !t.wrecked) : [];
+}
+/** One shot: tracer, muzzle, 8-12 damage that can miss at range. */
+function shoot(cop, G, dist) {
+  const P = G.P, from = { x: cop.pos.x, y: 1.45, z: cop.pos.z };
+  cop.cool = FT.fireEvery;
+  G.effects?.spawnMuzzle?.(from);
+  G.effects?.spawnTracer?.(from, { x: P.pos.x, y: 1.15, z: P.pos.z });
+  G.sound?.shot?.();
+  const miss = clamp((dist - 9) / 40, 0, 0.35) + (Math.abs(P.speed || 0) > 5 ? 0.1 : 0);
+  if (G.rng.next() > miss) G.damagePlayer?.(Math.round(rand(G, FT.dmgMin, FT.dmgMax)));
+  Object.assign(G, { alarm: 1, alarmX: cop.pos.x, alarmZ: cop.pos.z });
+}
+/** Run at her, hold 8-14 m with a sway, fire on the beat, arrest a wounded woman. */
+function step(PO, cop, G, dt) {
+  const P = G.P;
+  if (cop.down) { if ((cop.deadT -= dt) <= 0 && gap(cop.pos, P.pos) > 30) retire(PO, cop); return; }
+  cop.cool = Math.max(0, cop.cool - dt);
+  const dist = gap(cop.pos, P.pos), yaw = Math.atan2(P.pos.x - cop.pos.x, P.pos.z - cop.pos.z), seen = sees(cop, PO.W, P);
+  const ux = Math.sin(yaw), uz = Math.cos(yaw);
+  if ((cop.strafeT -= dt) <= 0) { cop.strafeT = rand(G, 0.9, 2.2); cop.strafe = -cop.strafe; }
+  let mx = -uz * cop.strafe * 0.55, mz = ux * cop.strafe * 0.55;
+  if (!seen || dist > 14) { mx += ux; mz += uz; } else if (dist < 8) { mx -= ux * 0.7; mz -= uz * 0.7; }
+  const mag = Math.hypot(mx, mz) || 1, stride = FT.run * (dist > 14 || !seen ? 1 : 0.45) * dt;
+  const at = resolveMove(PO.W, cop.pos.x, cop.pos.z, 0.42, (mx / mag) * stride, (mz / mag) * stride);
+  cop.pos.set(at.x, 0, at.z);
+  cop.walkT += stride * 1.6;
+  cop.yaw += turn(cop.yaw, yaw) * Math.min(1, dt * 8);
+  cop.legs[0].rotation.x = Math.sin(cop.walkT * 6) * 0.5;
+  cop.legs[1].rotation.x = -cop.legs[0].rotation.x;
+  cop.mesh.position.set(at.x, 0, at.z);
+  cop.mesh.rotation.set(0, cop.yaw, 0);
+  if (seen && dist <= FT.range && cop.cool <= 0 && !P.dead) shoot(cop, G, dist);
+  if (!G.inCar && !P.dead && P.hp <= FT.arrestHpBelow && dist <= FT.arrestDist) G.bust?.();
+}
+
+/** Two cruisers nose to nose across her path, 60 m ahead, once per window. */
+function roadblock(PO, G) {
+  const P = G.P, h = G.inCar ? G.inCar.heading : P.yaw || 0;
+  const base = lane(P.pos.x + Math.sin(h) * BL.dist, P.pos.z + Math.cos(h) * BL.dist);
+  const across = Math.atan2(Math.cos(h), -Math.sin(h)), px = Math.cos(across) * 3.1, pz = -Math.sin(across) * 3.1;
+  const crews = [-1, 1].map((s) => {
+    const car = addCarToScene(PO.W, makeCar('police', base.x + px * s, base.z + pz * s, across, C.copbody));
+    Object.assign(car, { speed: 0, occupant: 'npc', police: true });
+    const crew = { car, bar: attachBar(car), dead: false, stuckT: 0, ramCool: 0, dropped: true, parked: true };
+    PO.cars.push(crew);
+    spawnFoot(PO, G, car.x + Math.sin(across) * 2.4, car.z + Math.cos(across) * 2.4);
+    return crew;
+  });
+  PO.roadblock = { ...base, crews, t: BL.every };
+}
+
+/** Lose a star per full window with no officer able to see her. */
+function coolOff(PO, G, dt) {
+  if (PO.stars <= 0) return;
+  if (PO.cars.some((c) => !c.dead && sees(c, PO.W, G.P)) || PO.foot.some((f) => !f.down && sees(f, PO.W, G.P))) { PO.noSeeT = 0; return; }
+  const win = WANTED.decay[PO.stars] || 60;
+  if ((PO.noSeeT += dt) < win) return;
+  PO.noSeeT -= win;
+  PO.stars -= 1;
+  if (!PO.stars) { PO.noSeeT = 0; G.evaded = (G.evaded || 0) + 1; }
+}
+/** Keep cruisers and officers at the count the stars demand; recycle stragglers. */
+function muster(PO, G, dt) {
+  const [wantCars, wantFoot] = BAND[PO.stars] || [0, 0], P = G.P;
+  const live = PO.cars.filter((c) => !c.dead);
+  for (let i = live.length - 1; i >= wantCars; i -= 1) park(PO, live[i]);
+  const stale = PO.cars.filter((c) => !c.dead && !c.parked && gap(c.car, P.pos) > LOSE);
+  if (stale.length && PO.cars.length >= wantCars) park(PO, stale.pop());
+  if ((PO.spawnT = Math.max(0, PO.spawnT - dt)) <= 0 && PO.cars.filter((c) => !c.dead).length < wantCars) {
+    spawnCruiser(PO, G);
+    PO.spawnT = 1.1;
+  }
+  const onFoot = PO.foot.filter((f) => !f.down);
+  if (onFoot.length < wantFoot && !G.inCar) {
+    const idle = PO.cars.filter((c) => !c.dead && !c.dropped && gap(c.car, P.pos) < 90).sort((a, b) => gap(a.car, P.pos) - gap(b.car, P.pos))[0];
+    if (idle) { idle.dropped = true; disembark(PO, G, idle.car); }
+  }
+  const spare = onFoot.filter((f) => gap(f.pos, P.pos) > 45);
+  while (onFoot.length > wantFoot && spare.length) { retire(PO, spare.pop()); onFoot.pop(); }
+}
+
+/** Flat read of the law for the HUD. */
+export function wantedPoliced(PO) {
+  const s = (PO && PO.stars) | 0, cars = PO ? PO.cars.filter((c) => !c.dead).length : 0, foot = PO ? PO.foot.filter((f) => !f.down).length : 0;
+  return { stars: s, hot: s > 0, cars, foot, units: cars + foot, siren: Boolean(PO && PO.siren), coolIn: s ? Math.max(0, (WANTED.decay[s] || 60) - PO.noSeeT) : 0 };
+}
+/** One tick of the law: sirens, decay, strength, driving, officers, roadblocks, bars. */
+export function updatePolice(PO, G, dt) {
+  if (!PO || !G || !G.P) return;
+  PO.time += dt;
+  if ((PO.stars > 0) !== PO.siren) { PO.siren = !PO.siren; G.sound?.siren?.(PO.siren); }
+  coolOff(PO, G, dt);
+  muster(PO, G, dt);
+  for (const crew of PO.cars.slice()) { if (crew.dead) park(PO, crew); else if (!crew.parked) drive(PO, crew, G, dt); }
+  for (const cop of PO.foot.slice()) step(PO, cop, G, dt);
+  PO.blockT = Math.max(0, (PO.blockT || 0) - dt);
+  if (PO.stars >= BL.stars && !PO.roadblock && PO.blockT <= 0) roadblock(PO, G);
+  const rb = PO.roadblock;
+  if (rb) {
+    rb.t -= dt;
+    if (rb.t <= 0 || gap(G.inCar || G.P.pos, rb) > 210) {
+      for (const c of rb.crews) if (PO.cars.includes(c)) park(PO, c);
+      PO.roadblock = null;
+      PO.blockT = BL.every;
+    }
+  }
+  flash(PO, PO.time);
 }

@@ -1,69 +1,95 @@
-// Solara Bay — make.fun competition gta6-01 hand-in program.
-// Tiny static file server for game/ on port 8080: correct MIME types, path-traversal guard, no-store.
+// Solara Bay — static file server for local play.
+//
+//   node serve.ts            # http://localhost:8080/
+//   PORT=9000 node serve.ts
+//
+// Serves the repository root (so game/index.html is /game/index.html and the
+// screenshots sit at /screenshots/). Node 22, standard library only. Every
+// request is resolved inside the root and anything that would climb out is
+// refused with 403. No directory listings, no caching of game code.
 
-import { createReadStream, statSync } from 'node:fs';
-import { createServer, type ServerResponse } from 'node:http';
-import { extname, join, normalize, resolve } from 'node:path';
-import { dirname } from 'node:path';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), 'game');
-const PORT = Number(process.env.PORT || 8080);
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(HERE);
+const PORT = Number.parseInt(process.env.PORT ?? '8080', 10) || 8080;
 
+/** How each file extension is announced to the browser. */
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.ts': 'text/javascript; charset=utf-8',
+  '.ts': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
-  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
-  '.txt': 'text/plain; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.map': 'application/json; charset=utf-8',
 };
 
-function notFound(res: ServerResponse): void {
-  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-  res.end('not found\n');
+/** The URL path as a file path under ROOT, or null when it climbs out. */
+function targetPath(url: string): string | null {
+  const raw = url.split('?')[0]!.split('#')[0]!;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  if (decoded.includes('\0')) return null;
+  const rel = normalize(decoded).replace(/^([/\\])+/, '');
+  const full = resolve(join(ROOT, rel));
+  if (full !== ROOT && !full.startsWith(ROOT + sep)) return null;
+  return full;
 }
 
-function serveGame(requestUrl: string | undefined, res: ServerResponse): void {
-  const pathname = decodeURIComponent(new URL(requestUrl ?? '/', 'http://localhost').pathname);
-  const relative = normalize(pathname).replace(/^([/\\])+/, '');
-  const target = resolve(join(ROOT, relative));
+const sendStatus = (res: ServerResponse, code: number, text: string): void => {
+  res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8', 'content-length': Buffer.byteLength(text) });
+  res.end(text);
+};
 
-  if (target !== ROOT && !target.startsWith(ROOT + '/')) {
-    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end('forbidden\n');
+function handle(req: IncomingMessage, res: ServerResponse): void {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    sendStatus(res, 405, 'Only GET and HEAD are served.\n');
     return;
   }
-
-  let file = target;
-  try {
-    if (statSync(file).isDirectory()) file = join(file, 'index.html');
-    const info = statSync(file);
-    if (!info.isFile()) return notFound(res);
-    const type = MIME[extname(file).toLowerCase()] || 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': type, 'Content-Length': String(info.size), 'Cache-Control': 'no-store' });
-    createReadStream(file).pipe(res);
-  } catch {
-    notFound(res);
+  let full = targetPath(req.url ?? '/');
+  if (full === null) {
+    sendStatus(res, 403, 'That path is outside this server.\n');
+    return;
   }
-}
-
-const server = createServer((req, res) => {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    res.writeHead(405, { Allow: 'GET, HEAD', 'Cache-Control': 'no-store' });
+  if (existsSync(full) && statSync(full).isDirectory()) full = join(full, 'index.html');
+  if (!existsSync(full) || !statSync(full).isFile()) {
+    sendStatus(res, 404, `Not found: ${req.url ?? '/'}\n`);
+    return;
+  }
+  const info = statSync(full);
+  res.writeHead(200, {
+    'content-type': MIME[extname(full).toLowerCase()] ?? 'application/octet-stream',
+    'content-length': info.size,
+    'cache-control': 'no-cache',
+    'x-content-type-options': 'nosniff',
+  });
+  if (req.method === 'HEAD') {
     res.end();
     return;
   }
-  serveGame(req.url, res);
-});
+  createReadStream(full)
+    .on('error', () => sendStatus(res, 500, 'Read failed.\n'))
+    .pipe(res);
+}
 
-server.listen(PORT, () => {
-  console.log(`SOLARA BAY serving ${ROOT} at http://localhost:${PORT}`);
+createServer(handle).listen(PORT, () => {
+  console.log(`Solara Bay at http://localhost:${PORT}/game/index.html`);
 });

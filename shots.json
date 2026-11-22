@@ -1,6 +1,6 @@
 [
-  { "name": "1-chase.jpg", "query": "?shot=chase&seed=1" },
-  { "name": "2-city.jpg", "query": "?shot=city&seed=1" },
-  { "name": "3-mission.jpg", "query": "?shot=mission&seed=1" },
-  { "name": "4-start.jpg", "query": "?shot=start&seed=1" }
+  { "name": "chase", "query": "?shot=chase&seed=1" },
+  { "name": "city", "query": "?shot=city&seed=1" },
+  { "name": "mission", "query": "?shot=mission&seed=1" },
+  { "name": "start", "query": "?shot=start&seed=1" }
 ]

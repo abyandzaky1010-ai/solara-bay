@@ -1,170 +1,150 @@
-// Solara Bay — the street's short-lived light: tracers, muzzle flashes, blasts and
-// smoke. Pooled sprites with fixed geometry roles: a firefight allocates nothing.
+// Solara Bay — transient effects: bullet lines, muzzle bloom, fireballs, engine
+// smoke. One fixed pool of flat quads, built once and reused.
 
 import * as THREE from 'three';
-import { C } from './palette.js';
 
-const POOL = 96;
-const TTL = { tracer: 0.06, muzzle: 0.05, blast: 0.7, smoke: 1.2 };
-const GRAVITY = 9.5;
-
-// One flat quad for every sprite; tracers grow from their own origin along +Z.
+const POOL = 96; // quads shared by every effect
+const DRAG = 2.4; // per second on thrown particles
 const QUAD = new THREE.PlaneGeometry(1, 1);
-const STREAK = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
+const UP = new THREE.Vector3(0, 1, 0);
+// Life, size, growth per second, opacity, colour, atmospheric (face the camera).
+const KIND = {
+  tracer: [0.06, 0.09, 0, 0.9, 0xfff1b8, false],
+  muzzle: [0.06, 0.55, 1.6, 1, 0xffe6a0, true],
+  fire: [0.42, 2.6, 5.2, 0.95, 0xff8a3d, true],
+  smoke: [1.1, 0.9, 2, 0.5, 0x6f6f6f, true],
+};
 
-let pool = [];
+let pool = null;
 let next = 0;
-let hurtTimer = 0;
+let hitT = 0;
 
-// Unlit and depth-write free: flashes are light, not paint.
-const sheet = (hex, opacity, add) => new THREE.MeshBasicMaterial({
-  color: hex,
-  transparent: true,
-  opacity,
-  depthWrite: false,
-  side: THREE.DoubleSide,
-  blending: add ? THREE.AdditiveBlending : THREE.NormalBlending,
-});
+/** A dormant quad with its own material. */
+function blank() {
+  const material = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(QUAD, material);
+  mesh.visible = false;
+  mesh.frustumCulled = false;
+  return { mesh, material, alive: false, t: 0, ttl: 1, grow: 0, billboard: true, vel: { x: 0, y: 0, z: 0 } };
+}
 
-/** Build the pool of hidden sprites into the scene. */
+/** initEffects(W): the pool goes in the scene once. */
 export function initEffects(W) {
-  pool = [];
-  next = 0;
-  for (let i = 0; i < POOL; i += 1) {
-    const mesh = new THREE.Mesh(QUAD, sheet(0xffffff, 0.5));
-    mesh.visible = false;
-    mesh.frustumCulled = false;
-    mesh.renderOrder = 3;
-    if (W?.scene) W.scene.add(mesh);
-    pool.push({ mesh, streak: false, material: null, alive: false, t: 0, ttl: 0, grow: 1, gravity: 0, peak: 1, baseX: 1, baseY: 1, vel: new THREE.Vector3() });
+  if (!pool) {
+    const group = new THREE.Group();
+    group.name = 'effects';
+    const list = [];
+    for (let i = 0; i < POOL; i += 1) {
+      const q = blank();
+      group.add(q.mesh);
+      list.push(q);
+    }
+    pool = { group, list };
   }
+  if (W?.scene && pool.group.parent !== W.scene) W.scene.add(pool.group);
   return pool;
 }
 
-/** The next free sprite of this shape, else the oldest one, re-pointed. */
-function take(streak) {
-  if (!pool.length) return null;
+/** A free slot; with all 96 busy, the oldest is recycled. */
+function take() {
+  if (!pool) initEffects(null);
   for (let i = 0; i < POOL; i += 1) {
-    const idx = (next + i) % POOL;
-    if (pool[idx].alive) continue;
-    next = (idx + 1) % POOL;
-    return point(pool[idx], streak);
+    const at = (next + i) % POOL;
+    if (!pool.list[at].alive) {
+      next = (at + 1) % POOL;
+      return pool.list[at];
+    }
   }
-  const oldest = pool[next];
+  const old = pool.list[next];
   next = (next + 1) % POOL;
-  return point(oldest, streak);
+  return old;
 }
 
-function point(sprite, streak) {
-  if (sprite.streak !== streak) {
-    sprite.streak = streak;
-    sprite.mesh.geometry = streak ? STREAK : QUAD;
-  }
-  return sprite;
+/** Wake a quad at `at` as `kind`. */
+function light(kind, at, vel) {
+  const [ttl, size, grow, alpha, hex, billboard] = KIND[kind];
+  const s = take();
+  Object.assign(s, { alive: true, t: 0, ttl, grow, billboard, vel: vel || s.vel });
+  s.material.color.setHex(hex);
+  s.material.opacity = alpha;
+  s.mesh.position.set(at.x, at.y ?? 1, at.z);
+  s.mesh.quaternion.identity();
+  s.mesh.scale.set(size, kind === 'tracer' ? size : 1, kind === 'tracer' ? 1 : size);
+  s.mesh.visible = true;
+  return s;
 }
 
-/** Wake a sprite: where, what colour, how long, how it moves and grows. */
-function arm(sprite, cfg) {
-  if (!sprite) return null;
-  const { mesh } = sprite;
-  const sx = cfg.sx ?? 1;
-  const sy = cfg.sy ?? sx;
-  if (sprite.material) sprite.material.dispose();
-  sprite.material = sheet(cfg.hex, cfg.o, !!cfg.add);
-  mesh.material = sprite.material;
-  mesh.position.set(cfg.x || 0, cfg.y || 0, cfg.z || 0);
-  mesh.rotation.set(0, 0, 0);
-  mesh.scale.set(sx, sy, 1);
-  mesh.visible = true;
-  Object.assign(sprite, { alive: true, t: 0, ttl: cfg.ttl, grow: cfg.grow ?? 1, gravity: cfg.g ?? 0, peak: cfg.o, baseX: sx, baseY: sy });
-  sprite.vel.set(cfg.v?.x || 0, cfg.v?.y || 0, cfg.v?.z || 0);
-  return sprite;
-}
-
-/** A bullet's path: a bright streak from eye to impact, gone in a blink. */
+/** A thin stretched line from the eye to the impact, 60 ms long. */
 export function spawnTracer(a, b) {
   if (!a || !b) return null;
-  const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
-  const sprite = arm(take(true), { x: a.x, y: a.y, z: a.z, hex: C.beacon, o: 0.95, ttl: TTL.tracer, add: true, sx: 0.06, sy: Math.max(0.5, Math.hypot(dx, dy, dz)) });
-  if (!sprite) return null;
-  // Yaw about Y, then pitch: the streak lies along a -> b.
-  sprite.mesh.rotation.order = 'YXZ';
-  sprite.mesh.rotation.y = Math.atan2(dx, dz);
-  sprite.mesh.rotation.x = -Math.atan2(dy, Math.hypot(dx, dz));
-  return sprite;
+  const dx = b.x - a.x;
+  const dy = (b.y ?? 1) - (a.y ?? 1);
+  const dz = b.z - a.z;
+  const len = Math.hypot(dx, dy, dz) || 0.1;
+  const s = light('tracer', { x: (a.x + b.x) / 2, y: ((a.y ?? 1) + (b.y ?? 1)) / 2, z: (a.z + b.z) / 2 });
+  s.mesh.scale.set(KIND.tracer[1], len, KIND.tracer[1]);
+  s.mesh.quaternion.setFromUnitVectors(UP, new THREE.Vector3(dx, dy, dz).divideScalar(len));
+  return s;
 }
 
-/** Muzzle flare: wide, hot, already fading. */
+/** The warm bloom off a barrel. */
 export function spawnMuzzle(pos) {
-  return pos ? arm(take(false), { x: pos.x, y: pos.y, z: pos.z, hex: 0xfff2c9, o: 1, ttl: TTL.muzzle, grow: 2.2, add: true, sx: 0.5 }) : null;
+  return pos ? light('muzzle', pos, { x: 0, y: 0.4, z: 0 }) : null;
 }
 
-/** A car going up: one flash, ten embers thrown wide and bouncing, smoke behind. */
+/** A fireball and six wedges of smoke thrown outward. */
 export function spawnExplosion(pos) {
   if (!pos) return null;
-  const y = pos.y ?? 1;
-  const flash = arm(take(false), { x: pos.x, y, z: pos.z, hex: 0xffd27a, o: 0.95, ttl: TTL.blast * 0.45, grow: 2.6, add: true, sx: 3.6 });
-  for (let i = 0; i < 10; i += 1) {
-    const a = (i / 10) * Math.PI * 2 + i * 0.31;
-    const out = 4 + (i % 4) * 1.5;
-    arm(take(false), {
-      x: pos.x + Math.cos(a) * 0.6,
-      y: y + 0.4,
-      z: pos.z + Math.sin(a) * 0.6,
-      hex: i % 3 === 0 ? 0x3a2a22 : i % 3 === 1 ? 0xff8a3d : 0xffc247,
-      o: 0.95,
-      ttl: TTL.blast,
-      grow: 0.5,
-      g: GRAVITY,
-      v: { x: Math.cos(a) * out, y: 3 + (i % 3) * 1.6, z: Math.sin(a) * out },
-      add: i % 3 !== 0,
-      sx: 0.9,
-    });
+  const at = { x: pos.x, y: (pos.y ?? 1) + 0.3, z: pos.z };
+  const fire = light('fire', at, { x: 0, y: 2.2, z: 0 });
+  fire.material.color.setHex(0xffd24a);
+  fire.ttl = 0.25;
+  for (let i = 0; i < 6; i += 1) {
+    const a = (i / 6) * Math.PI * 2;
+    light('smoke', at, { x: Math.cos(a) * 3.2, y: 1.6 + i * 0.2, z: Math.sin(a) * 3.2 });
   }
-  arm(take(false), { x: pos.x, y: y + 1.2, z: pos.z, hex: 0x8b9299, o: 0.55, ttl: TTL.smoke, grow: 7, v: { y: 1.1 }, sx: 1.8 });
-  return flash;
+  return true;
 }
 
-/** A tired engine or scuffed tyres: grey, climbing, spreading. */
+/** One grey breath from a dying engine. */
 export function spawnSmokePuff(pos) {
-  return pos ? arm(take(false), { x: pos.x, y: (pos.y ?? 0.6) + 0.2, z: pos.z, hex: 0xb6bcc2, o: 0.45, ttl: TTL.smoke, grow: 3.5, v: { y: 0.6 }, sx: 0.8 }) : null;
+  return pos ? light('smoke', pos, { x: 0.2, y: 1.1, z: 0.2 }) : null;
 }
 
-/** The red edge of a bad hit: a class on the HUD for 200 ms. */
+/** Red vignette via the #hud class, cleared after 200 ms. */
 export function flashDamage() {
-  const hud = typeof document !== 'undefined' ? document.getElementById('hud') : null;
-  if (!hud) return;
-  hud.classList.add('hurt');
-  clearTimeout(hurtTimer);
-  hurtTimer = setTimeout(() => hud.classList.remove('hurt'), 200);
+  const hud = typeof document === 'undefined' ? null : document.getElementById('hud');
+  if (!hud) return false;
+  hitT = 0.2;
+  hud.classList.add('hit');
+  return true;
 }
 
-/** Advance every live sprite: drift, grow, fall, fade; hide it at the end of its life. */
+/** updateEffects(W, dt): age, drift, grow, fade, and face the camera. */
 export function updateEffects(W, dt) {
-  const step = Math.min(dt || 0, 0.1);
-  for (const sp of pool) {
-    if (!sp.alive) continue;
-    const life = (sp.t += step) / sp.ttl;
+  if (!pool) return false;
+  for (const s of pool.list) {
+    if (!s.alive) continue;
+    const life = (s.t += dt) / s.ttl;
     if (life >= 1) {
-      sp.alive = false;
-      sp.mesh.visible = false;
+      Object.assign(s, { alive: false });
+      s.mesh.visible = false;
       continue;
     }
-    const { mesh, vel } = sp;
-    mesh.position.set(mesh.position.x + vel.x * step, mesh.position.y + vel.y * step, mesh.position.z + vel.z * step);
-    if (sp.gravity) {
-      vel.y -= sp.gravity * step;
-      // Embers settle on the asphalt instead of sinking through it.
-      if (mesh.position.y < 0.08) {
-        mesh.position.y = 0.08;
-        vel.set(vel.x * 0.6, Math.abs(vel.y) * 0.35, vel.z * 0.6);
-      }
+    if (s.grow) {
+      const keep = Math.max(0, 1 - DRAG * dt);
+      s.vel.x *= keep;
+      s.vel.y *= keep;
+      s.vel.z *= keep;
+      s.mesh.position.x += s.vel.x * dt;
+      s.mesh.position.y += s.vel.y * dt;
+      s.mesh.position.z += s.vel.z * dt;
+      const size = s.mesh.scale.x + s.grow * dt;
+      s.mesh.scale.set(size, 1, size);
     }
-    if (sp.grow !== 1) {
-      const k = 1 + (sp.grow - 1) * Math.min(1, life * 1.5);
-      mesh.scale.set(sp.baseX * k, sp.baseY * k, 1);
-    }
-    sp.material.opacity = sp.peak * (1 - life * life);
+    s.material.opacity = 0.9 * (1 - life) * (1 - life * 0.3) + 0.05;
+    if (s.billboard && W?.camera) s.mesh.lookAt(W.camera.position);
   }
-  void W;
+  if (hitT > 0 && (hitT -= dt) <= 0 && typeof document !== 'undefined') document.getElementById('hud')?.classList.remove('hit');
+  return true;
 }

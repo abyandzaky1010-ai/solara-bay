@@ -1,4 +1,5 @@
-// Solara Bay — the bay's colour names and the shared material factory.
+// The city's colours, by what they are, plus one material factory so the
+// renderer never allocates a material twice for the same look.
 
 import * as THREE from 'three';
 
@@ -32,20 +33,31 @@ export const C = {
   marker: 0xffd24a,
 };
 
+/** The three ways a surface is lit: matte lambert, flat unlit, or glossy glass. */
 const cache = new Map();
 
-export function material(hex, { flat = false, glassy = false } = {}) {
-  const key = `${hex}|${flat ? 'f' : 'n'}|${glassy ? 'g' : 'l'}`;
-  let mat = cache.get(key);
-  if (mat) return mat;
+/** A shared material for `hex`: lambent by default, glossy when glassy, unlit when flat. */
+export function material(hex, opts = {}) {
+  const flat = opts.flat === true;
+  const glassy = opts.glassy === true;
+  const key = hex * 4 + (flat ? 1 : 0) + (glassy ? 2 : 0);
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
 
-  if (flat) {
-    mat = new THREE.MeshBasicMaterial({ color: hex });
-  } else if (glassy) {
-    mat = new THREE.MeshPhongMaterial({ color: hex, shininess: 80, specular: 0xdfefff });
-  } else {
-    mat = new THREE.MeshLambertMaterial({ color: hex });
-  }
-  cache.set(key, mat);
-  return mat;
+  let made;
+  if (flat) made = new THREE.MeshBasicMaterial({ color: hex });
+  else if (glassy) made = new THREE.MeshPhongMaterial({ color: hex, shininess: 80, specular: 0xffffff });
+  else made = new THREE.MeshLambertMaterial({ color: hex });
+  cache.set(key, made);
+  return made;
+}
+
+/** Emissive material for sirens, beacons and glowing markers. */
+export function glow(hex, intensity = 1.6) {
+  const key = hex * 4 + 3 + Math.round(intensity * 10) * 4;
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  const made = new THREE.MeshBasicMaterial({ color: new THREE.Color(hex).multiplyScalar(intensity) });
+  cache.set(key, made);
+  return made;
 }

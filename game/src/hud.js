@@ -1,296 +1,255 @@
-// Solara Bay — the glass over the city: bars, stars, wallet, objective, toasts,
-// the panels, and the corner map that tells you where to drive.
+// Solara Bay — HUD readouts, the 180 px minimap, notes, and the cards.
 
-import { CONFIG } from './config.js';
-import { C } from './palette.js';
+const ROAD = [-160, -80, 0, 80, 160]; // avenue lines, both axes
+const WORLD = 440; // m the minimap covers
+const SIZE = 180; // px of canvas
+const S = SIZE / WORLD; // px per metre
+const HALF = 200;
+const SEA = -172; // ocean west of this line
+const CURB = 9; // asphalt plus both sidewalks
+const GOLD = '#ffd24a';
+const NOTE_MS = 2500;
 
-const W = CONFIG.world;
-const HALF = W.half;
-const SEA = W.sea;
-const MINI = 180; // canvas px, square
-const SPAN = 440; // m across the sheet: the 400 m town plus margin
-const SCALE = MINI / SPAN;
-const TOAST_MS = 2500;
-const TOAST_MAX = 3;
-const GRID = [-160, -80, 0, 80, 160];
-const PANELS = ['title', 'pause', 'shop', 'complete', 'busted', 'wasted'];
+const el = (id) => (typeof document === 'undefined' ? null : document.getElementById(id));
+const px = (v) => Math.round((v + WORLD / 2) * S);
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+const cash = (n) => `$${Math.round(Math.max(0, n || 0)).toLocaleString('en-US')}`;
 
-const clock = (s) => `${String(Math.floor(Math.max(0, s) / 60)).padStart(2, '0')}:${String(Math.max(0, s) % 60).padStart(2, '0')}`;
-
-// Every HUD node once, plus a cache so text is only written when it changes.
+/** createHUD() → H: every element grabbed once. */
 export function createHUD() {
-  const id = (x) => document.getElementById(x);
+  const bar = (id) => el(id)?.querySelector('i') ?? null;
   const H = {
-    hud: id('hud'),
-    stars: id('stars'),
-    money: id('money'),
-    health: id('healthbar')?.querySelector('i'),
-    armor: id('armorbar')?.querySelector('i'),
-    weapon: id('weapon'),
-    speed: id('speed'),
-    objective: id('objective'),
-    timer: id('timer'),
-    toasts: id('toasts'),
-    minimap: id('minimap'),
-    crosshair: id('crosshair'),
-    banner: id('banner'),
-    panels: {},
-    stars_live: [],
-    toastsLive: [],
-    frame: 0,
-    c: { money: '', stars: -1, hp: -1, armor: -1, objective: '', timer: '' },
-    pulse: 0,
-    bannerT: 0,
-    mapStatic: null,
+    root: el('hud'), stars: el('stars'), cash: el('money'), weapon: el('weapon'), hp: bar('healthbar'), armour: bar('armorbar'),
+    speed: el('speed'), line: el('objective'), clock: el('timer'), notes: el('toasts'), crosshair: el('crosshair'), mini: el('minimap'),
+    panels: {}, seen: {}, marks: [], banner: null, open: null, now: 0, purse: -1, starsSeen: -1,
   };
-  // Five glyphs once; a class does the colouring.
-  for (let i = 0; H.stars && i < 5; i += 1) {
-    const el = document.createElement('span');
-    el.textContent = '\u2605';
-    H.stars.appendChild(el);
-    H.stars_live.push(el);
-  }
-  for (const key of PANELS) if (id(key)) H.panels[key] = id(key);
-  if (H.minimap) {
-    H.mapCtx = H.minimap.getContext('2d');
-    H.mapStatic = prerenderGround();
-  }
-  H.toast = (txt) => toast(H, txt);
+  H.ctx = H.mini?.getContext('2d') ?? null;
+  for (const id of ['title', 'pause', 'shop', 'complete', 'busted', 'wasted']) H.panels[id] = el(id);
   return H;
 }
 
-// Text and bar writers that skip the DOM when nothing changed.
-const text = (el, value, c, k) => el && el.dataset.v !== value && ((el.dataset.v = value), (el.textContent = value), (c[k] = value));
-const bar = (el, pct, c, k) => {
-  const v = Math.max(0, Math.min(100, Math.round(pct)));
-  if (el && c[k] !== v) el.style.width = `${(c[k] = v)}%`;
-};
+/** Write text only when the node does not already say it. */
+function put(H, node, text) {
+  const key = node.id || node;
+  if (!node || H.seen[key] === text) return;
+  H.seen[key] = text;
+  node.textContent = text;
+}
 
-// ------------------------------------------------------------------ the frame
-
-/** Bars, wallet, stars, gun, speed, the job line and the clocks. */
+/** updateHUD(H, G, dt): every readout, once a frame. */
 export function updateHUD(H, G, dt) {
   if (!H || !G) return;
-  const P = G.P || {};
-  const E = G.E || {};
-  const car = G.inCar;
-  const step = dt || 0;
+  const step = Math.min(0.25, dt || 0);
+  const P = G.P;
+  H.root.classList.toggle('on', G.screen !== 'title');
+  H.crosshair.classList.toggle('on', G.screen === 'play' && !G.inCar);
 
-  // Wallet: the roll lives in economy.
-  if (H.money) {
-    E.rollMoney?.(step);
-    text(H.money, E.formatMoney ? E.formatMoney(E) : `$${Math.round(E.money || 0)}`, H.c, 'money');
-  }
-
-  // Stars, with a short pulse on a gain.
-  const stars = Math.max(0, Math.min(5, G.PO?.stars | 0));
-  if (H.c.stars !== stars) {
-    if (stars > H.c.stars) H.pulse = 0.42;
-    H.c.stars = stars;
-    H.stars_live.forEach((el, i) => el.classList.toggle('on', i < stars));
-  }
-  if (H.pulse > 0 && (H.pulse -= step) <= 0) H.stars?.classList.remove('pulse');
-  else if (H.pulse > 0) H.stars?.classList.add('pulse');
-
-  bar(H.health, ((P.hp ?? 100) / CONFIG.player.hp) * 100, H.c, 'hp');
-  bar(H.armor, ((P.armor ?? 0) / 100) * 100, H.c, 'armor');
-
-  // Gun and rounds.
-  const rifle = P.rifle && (P.ammo | 0) > 0;
-  text(H.weapon, rifle ? `Rifle · ${P.ammo | 0}` : 'Pistol', H.c, 'weapon');
-
-  if (H.speed) {
-    const on = !!car && !car.wrecked;
-    H.speed.classList.toggle('empty', !on);
-    if (on) text(H.speed, `${Math.round(Math.abs(car.speed || 0) * 3.6)} km/h`, H.c, 'speed');
-  }
-  H.crosshair?.classList.toggle('empty', !!car || !!P.dead);
-
-  // Job line and clock, banner, toasts.
-  const O = G.objective;
-  if (O) {
-    const reach = O.dist > 0 ? ` · ${O.dist} m` : '';
-    const line = `<b>${O.title || 'Job'}</b> — ${O.text || ''}${reach}`;
-    H.objective?.classList.remove('empty');
-    if (H.objective && H.c.objective !== line) {
-      H.c.objective = line;
-      H.objective.innerHTML = line;
+  const want = Math.max(0, Math.round(G.E?.money ?? 0));
+  H.purse = H.purse < 0 || Math.abs(want - H.purse) < 1 ? want : H.purse + (want - H.purse) * Math.min(1, step * 9);
+  put(H, H.cash, cash(H.purse));
+  const n = clamp(G.PO?.stars ?? 0, 0, 5);
+  if (H.starsSeen !== n) {
+    if (H.starsSeen >= 0 && n > H.starsSeen) {
+      H.stars.classList.remove('pulse');
+      void H.stars.offsetWidth; // restart the CSS animation
+      H.stars.classList.add('pulse');
     }
-    if (H.timer) {
-      H.timer.classList.toggle('empty', !(O.timer > 0));
-      if (O.timer > 0) text(H.timer, clock(O.timer), H.c, 'timer');
-    }
-  } else {
-    H.objective?.classList.add('empty');
-    H.timer?.classList.add('empty');
-    H.c.objective = '';
+    H.starsSeen = n;
+    H.stars.innerHTML = [0, 1, 2, 3, 4].map((i) => (i < n ? '<b>\u2605</b>' : '\u2606')).join('');
   }
 
-  if (H.bannerT > 0 && (H.bannerT -= step) <= 0) setBanner(H, '', 0);
-  for (let i = H.toastsLive.length - 1; i >= 0; i -= 1) {
-    const row = H.toastsLive[i];
-    const left = TOAST_MS / 1000 - (row.t += step);
-    if (left <= 0) row.el.remove(), H.toastsLive.splice(i, 1);
-    else if (left < 0.5) row.el.style.opacity = String(left / 0.5);
+  if (P) {
+    const bar = (n) => `${clamp(Math.round(n), 0, 100)}%`;
+    H.hp.style.width = bar(P.hp);
+    H.armour.style.width = bar(P.armor);
+    put(H, H.weapon, P.weapon === 'rifle' && P.rifle ? `RIFLE  ${Math.max(0, P.ammo | 0)} rounds` : 'PISTOL  \u221e');
   }
+
+  const o = G.objective;
+  put(H, H.line, o ? `${o.title} — ${o.text}${o.dist > 6 ? `  ·  ${Math.round(o.dist)} m` : ''}`
+    : G.M?.failed ? 'Job lost. R to try again.' : 'Vesper waits at the Glass Orchid.');
+  put(H, H.clock, o?.timer > 0 ? `${Math.ceil(o.timer)}s` : '');
+  put(H, H.speed, G.inCar ? `${Math.round(Math.abs(G.inCar.speed) * 3.6)} km/h${G.inCar.kind === 'taxi' && G.E?.fares ? ' · meter' : ''}` : '');
+
+  H.now += step * 1000;
+  for (let i = H.marks.length - 1; i >= 0; i -= 1) {
+    const left = NOTE_MS - (H.now - H.marks[i].born);
+    if (left <= 0) H.marks.splice(i, 1)[0].node.remove();
+    else if (left < 600) H.marks[i].node.style.opacity = String(left / 600);
+  }
+  if (H.banner && H.now - H.banner.born > H.banner.ms) H.banner = null;
 }
 
-// ------------------------------------------------------------------ words
+/** A .toast div, optionally styled. */
+function noteBox(css) {
+  const node = Object.assign(document.createElement('div'), { className: 'toast' });
+  if (css) node.style.cssText = css;
+  return node;
+}
 
-/** One line, stacked last, oldest falling off the top when the stack is full. */
+/** toast(H, txt): newest at the bottom, three at most. */
 export function toast(H, txt) {
-  if (!H?.toasts || !txt) return;
-  const el = document.createElement('div');
-  el.className = 'toast';
-  el.textContent = txt;
-  H.toasts.appendChild(el);
-  H.toastsLive.push({ el, t: 0 });
-  while (H.toastsLive.length > TOAST_MAX) H.toastsLive.shift().el.remove();
+  if (!H?.notes || !txt) return null;
+  const node = noteBox();
+  node.textContent = String(txt);
+  H.notes.appendChild(node);
+  H.marks.push({ node, born: H.now });
+  while (H.marks.length > 3) H.marks.shift().node.remove();
+  return node;
 }
 
-/** A big centred word: MISSION COMPLETE, WASTED, five stars. */
-export function setBanner(H, txt, ms = 2200) {
-  if (!H?.banner) return;
-  H.banner.textContent = txt || '';
-  H.banner.classList.toggle('show', !!txt);
-  H.bannerT = txt ? ms / 1000 : 0;
+/** setBanner(H, txt, ms): one line near the middle of the screen. */
+export function setBanner(H, txt, ms = 1800) {
+  if (!H?.root) return null;
+  if (!H.banner) {
+    H.banner = { node: noteBox('position:absolute;left:50%;top:56%;transform:translateX(-50%);font-size:19px') };
+    H.root.appendChild(H.banner.node);
+  }
+  Object.assign(H.banner, { born: H.now, ms: Math.max(300, ms || 1800) });
+  H.banner.node.textContent = String(txt ?? '');
+  return H.banner.node;
 }
 
-// ------------------------------------------------------------------ panels
+// ------------------------------------------------------------------ minimap
 
+function dot(c, at, ink, r, ring) {
+  const x = clamp(px(at.x), 3, SIZE - 3);
+  const y = clamp(px(at.z), 3, SIZE - 3);
+  c.fillStyle = ink;
+  c.beginPath();
+  c.arc(x, y, r, 0, 6.2832);
+  c.fill();
+  if (!ring) return;
+  c.strokeStyle = ring;
+  c.strokeRect(x - r - 1.5, y - r - 1.5, r * 2 + 3, r * 2 + 3);
+}
+
+/** A square turned 45°: the gold marker, an arrow when off-map. */
+function diamond(c, at, ink) {
+  const tx = px(at.x);
+  const ty = px(at.z);
+  const x = clamp(tx, 7, SIZE - 7);
+  const y = clamp(ty, 7, SIZE - 7);
+  c.save();
+  c.translate(x, y);
+  c.rotate(x === tx && y === ty ? 0 : Math.atan2(ty - y, tx - x) + Math.PI / 4);
+  c.fillStyle = ink || GOLD;
+  c.strokeStyle = 'rgba(60,40,0,.8)';
+  c.fillRect(-4, -4, 8, 8);
+  c.strokeRect(-4, -4, 8, 8);
+  c.restore();
+}
+
+/** A capital on a coin: the shop's S, the giver's !. */
+function stamp(c, at, letter, ink) {
+  c.fillStyle = ink;
+  c.beginPath();
+  c.arc(px(at.x), px(at.z), 5.4, 0, 6.2832);
+  c.fill();
+  c.fillStyle = '#0e1a26';
+  c.font = 'bold 8px sans-serif';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(letter, px(at.x), px(at.z) + 0.5);
+}
+
+/** drawMinimap(H, G): water, grid, blocks, park, blips, markers, the player. */
+export function drawMinimap(H, G) {
+  const ctx = H?.ctx;
+  if (!ctx || !G) return;
+  const city = G.city || {};
+  const wide = Math.round(12 * S) || 2;
+  const band = (x, z, w, h, ink) => (ctx.fillStyle = ink, ctx.fillRect(px(x), px(z), w, h));
+
+  band(-WORLD / 2, -WORLD / 2, (SEA + WORLD / 2) * S, SIZE, '#9fc7d6');
+  band(SEA, -WORLD / 2, (HALF - SEA) * S, SIZE, '#e9e2ce');
+  band(-HALF, -WORLD / 2, HALF * 2 * S, SIZE, '#dfe9f2');
+
+  for (const [i, a] of ROAD.entries()) {
+    for (const [j, b] of ROAD.entries()) {
+      const w = ((ROAD[i + 1] ?? HALF) - CURB - a - CURB) * S;
+      const h = ((ROAD[j + 1] ?? HALF) - CURB - b - CURB) * S;
+      if (w > 0 && h > 0) ctx.fillRect(px(a + CURB), px(b + CURB), w, h);
+    }
+  }
+  ctx.fillStyle = '#4a5058';
+  for (const line of ROAD) {
+    ctx.fillRect(0, px(line) - wide / 2, SIZE, wide);
+    ctx.fillRect(px(line) - wide / 2, 0, wide, SIZE);
+  }
+
+  const park = city.park?.bounds;
+  if (park) band(park.minX, park.minZ, (park.maxX - park.minX) * S, (park.maxZ - park.minZ) * S, '#74b463');
+  for (const b of city.buildings) band(b.x - b.w / 2, b.z - b.d / 2, Math.max(1, b.w * S), Math.max(1, b.d * S), '#485666');
+
+  for (const c of G.traffic || []) if (!c.wrecked) dot(ctx, c, '#fff', 1.3);
+  for (const c of G.cars || []) if (!c.wrecked) dot(ctx, c, '#8fb8f0', 1.5);
+  ctx.fillStyle = '#8d99a5';
+  for (const q of G.peds) if (!q.riding && q.state !== 'down') dot(ctx, q.pos, '#8d99a5', 0.7);
+  for (const c of G.PO?.cars || []) dot(ctx, c.car || c, '#ff3b30', 2, 'rgba(255,59,48,.5)');
+  for (const c of G.PO?.foot || []) if (!c.down) dot(ctx, c.pos, '#ff3b30', 1.6);
+  if (G.inCar) dot(ctx, G.inCar, GOLD, 2.2, '#12202e');
+
+  const fare = G.E?.fareState;
+  if (G.M.marker) diamond(ctx, G.M.marker);
+  if (fare?.drop) diamond(ctx, fare.drop, '#fff0c2');
+  else if (fare?.at) dot(ctx, fare.at, '#fff0c2', 2);
+  if (city.markers?.vineMart) stamp(ctx, city.markers.vineMart, 'S', '#7ede8f');
+  if (city.markers?.glassOrchid) stamp(ctx, city.markers.glassOrchid, '!', GOLD);
+
+  const me = G.inCar;
+  const p = me && G.P;
+  if (p) {
+    ctx.save();
+    ctx.translate(px(me ? me.x : p.pos.x), px(me ? me.z : p.pos.z));
+    ctx.rotate(-(me ? me.heading : p.yaw ?? 0) + Math.PI);
+    ctx.beginPath();
+    ctx.moveTo(0, -6);
+    ctx.lineTo(4, 5);
+    ctx.lineTo(-4, 5);
+    ctx.closePath();
+    ctx.fillStyle = '#ff3b30';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,.5)';
+  ctx.strokeRect(0.5, 0.5, SIZE - 1, SIZE - 1);
+}
+
+// ------------------------------------------------------------------ cards
+
+/** One card up, the rest down. */
 export function showPanel(H, id) {
-  if (!H) return;
-  for (const key of PANELS) H.panels[key]?.classList.toggle('hidden', key !== id);
-  H.hud?.classList.toggle('hidden', ['title', 'busted', 'wasted'].includes(id));
+  const node = H?.panels[id] || el(id);
+  if (!node) return false;
+  hidePanels(H);
+  node.classList.add('on');
+  H.open = id;
+  return true;
 }
 
+/** Every card down. */
 export function hidePanels(H) {
   if (!H) return;
-  for (const key of PANELS) H.panels[key]?.classList.add('hidden');
-  H.hud?.classList.remove('hidden');
+  for (const id of Object.keys(H.panels)) H.panels[id]?.classList.remove('on');
+  H.open = null;
 }
 
-// ------------------------------------------------------------------ the minimap
-
-const px = (x) => (x + SPAN / 2) * SCALE;
-const py = (z) => (z + SPAN / 2) * SCALE;
-
-// The city never moves: ground, blocks, park and avenues are painted once.
-function prerenderGround() {
-  if (typeof document === 'undefined') return null;
-  const off = document.createElement('canvas');
-  off.width = off.height = MINI;
-  const g = off.getContext('2d');
-  const P = W.parkRect;
-  g.fillStyle = '#7fc6d8';
-  g.fillRect(0, 0, px(SEA), MINI);
-  g.fillStyle = '#cfe6d8';
-  g.fillRect(px(SEA), 0, MINI - px(SEA), MINI);
-  g.fillStyle = '#e8eee4';
-  for (let i = 0; i < 4; i += 1) {
-    for (let j = 0; j < 4; j += 1) g.fillRect(px(GRID[i] + W.roadHalf), py(GRID[j] + W.roadHalf), (W.pitch - 2 * W.roadHalf) * SCALE, (W.pitch - 2 * W.roadHalf) * SCALE);
+/** The Vine Mart's rows, priced from SHOP. */
+export function fillShop(H, shop, have) {
+  const list = el('shop-items');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const line of shop || []) {
+    const row = Object.assign(document.createElement('div'), { className: 'item' });
+    const buy = Object.assign(document.createElement('button'), { textContent: 'Buy', disabled: have < line.price });
+    buy.dataset.buy = line.item;
+    row.innerHTML = `<span>${line.label}</span><span class="price">$${line.price}</span>`;
+    row.appendChild(buy);
+    list.appendChild(row);
   }
-  g.fillStyle = '#8fd07a';
-  g.fillRect(px(P.minX), py(P.minZ), (P.maxX - P.minX) * SCALE, (P.maxZ - P.minZ) * SCALE);
-  g.fillStyle = '#96a3ae';
-  for (const s of GRID) {
-    g.fillRect(px(s) - W.roadHalf * SCALE, py(-HALF), 2 * W.roadHalf * SCALE, HALF * 2 * SCALE);
-    g.fillRect(px(-HALF), py(s) - W.roadHalf * SCALE, HALF * 2 * SCALE, 2 * W.roadHalf * SCALE);
-  }
-  return off;
-}
-
-// A gold diamond, clamped to the rim when its target is off the sheet.
-function diamond(g, x, z, hex, r = 6) {
-  const cx = Math.max(r + 3, Math.min(MINI - r - 3, px(x)));
-  const cy = Math.max(r + 3, Math.min(MINI - r - 3, py(z)));
-  g.beginPath();
-  g.moveTo(cx, cy - r);
-  g.lineTo(cx + r, cy);
-  g.lineTo(cx, cy + r);
-  g.lineTo(cx - r, cy);
-  g.closePath();
-  g.fillStyle = hex;
-  g.fill();
-}
-
-// A round stamp with one letter: '!' for the giver, 'S' for the shop.
-function stamp(g, p, hex, letter, r) {
-  g.fillStyle = hex;
-  g.beginPath();
-  g.arc(px(p.x), py(p.z), r, 0, Math.PI * 2);
-  g.fill();
-  g.fillStyle = '#fff7e6';
-  g.fillText(letter, px(p.x), py(p.z) + 0.5);
-}
-
-/** The 180 px map, called every second frame; everything comes from G. */
-export function drawMinimap(H, G) {
-  const g = H?.mapCtx;
-  if (!g || !G) return;
-  const me = G.inCar || G.P?.pos || { x: 0, z: 0 };
-  const marks = G.city?.markers || {};
-  g.clearRect(0, 0, MINI, MINI);
-  if (H.mapStatic) g.drawImage(H.mapStatic, 0, 0);
-  else g.fillStyle = '#cfe6d8', g.fillRect(0, 0, MINI, MINI);
-
-  // Skyline: cool towers east, warm low-rise west.
-  for (const b of G.city?.buildings || []) {
-    g.fillStyle = b.x >= 0 ? '#9fb3c4' : '#d9a98f';
-    g.fillRect(px(b.x - b.w / 2), py(b.z - b.d / 2), Math.max(2, b.w * SCALE), Math.max(2, b.d * SCALE));
-  }
-
-  // Traffic white, parked cars blue.
-  g.fillStyle = '#ffffff';
-  for (const car of G.traffic || []) g.fillRect(px(car.x) - 1.5, py(car.z) - 1.5, 3, 3);
-  g.fillStyle = '#4aa3ff';
-  for (const car of G.cars || []) if (car !== G.inCar) g.fillRect(px(car.x) - 2, py(car.z) - 2, 4, 3);
-
-  // Walkers.
-  g.fillStyle = '#5a6470';
-  for (const ped of G.peds || []) {
-    const p = ped.pos;
-    if (p) g.fillRect(px(p.x), py(p.z), 2, 1);
-  }
-
-  // Police red, blinking with the lightbar.
-  g.fillStyle = Math.floor((G.time || 0) * 4) % 2 === 0 ? '#ff3b30' : '#ff9b94';
-  for (const row of G.PO?.cars || []) {
-    const c = row.car || row;
-    g.fillRect(px(c.x) - 2, py(c.z) - 2, 4, 4);
-  }
-  for (const cop of G.PO?.foot || []) if (cop.pos) g.fillRect(px(cop.pos.x) - 1.5, py(cop.pos.z) - 1.5, 3, 3);
-
-  g.font = 'bold 11px "Segoe UI",Arial,sans-serif';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  if (marks.glassOrchid) stamp(g, marks.glassOrchid, '#c8791f', '!', 6);
-  if (marks.vineMart) stamp(g, marks.vineMart, '#2e7d52', 'S', 5.5);
-
-  // Job and fare markers, gold, edge-clamped.
-  if (G.M?.marker) diamond(g, G.M.marker.x, G.M.marker.z, C.marker);
-  const fare = G.E?.fareState && G.E.fares ? (G.fareMarker?.() || G.E.fareState.dest) : null;
-  if (fare && Number.isFinite(fare.x)) diamond(g, fare.x, fare.z, fare.kind === 'fare' ? '#ffb347' : C.marker, 5);
-
-  // Player triangle, turned to the heading.
-  const yaw = G.inCar ? G.inCar.heading : G.P?.yaw || 0;
-  g.save();
-  g.translate(px(me.x), py(me.z));
-  g.rotate(-yaw + Math.PI);
-  g.beginPath();
-  g.moveTo(0, -6);
-  g.lineTo(4.5, 4);
-  g.lineTo(0, 1.5);
-  g.lineTo(-4.5, 4);
-  g.closePath();
-  g.fillStyle = '#ffffff';
-  g.strokeStyle = '#1d2733';
-  g.lineWidth = 1.5;
-  g.stroke();
-  g.fill();
-  g.restore();
-  g.fillStyle = 'rgba(20,32,48,.75)';
-  g.font = 'bold 10px "Segoe UI",Arial,sans-serif';
-  g.textAlign = 'left';
-  g.fillText('N', 5, 9);
+  const note = el('shop-note');
+  if (note) note.textContent = `You have ${cash(have)}.`;
 }

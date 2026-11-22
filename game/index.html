@@ -1,168 +1,209 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Solara Bay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOLARA BAY</title>
 <style>
-  :root{--panel:rgba(12,20,32,.62);--solid:rgba(12,20,32,.86);--edge:rgba(255,255,255,.16);--text:#f6f9ff;--muted:#b8c6d8;--coral:#ff8a72;--sun:#ffd24a;--mint:#7ce0b3;--sky:#7fc6ff;--danger:#ff4d4d}
-  *{box-sizing:border-box}
-  html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#bfe3ff;color:var(--text);font:400 14px/1.4 "Segoe UI","Helvetica Neue",Arial,sans-serif;user-select:none;-webkit-font-smoothing:antialiased}
-  #app{position:fixed;inset:0}
-  #app canvas{display:block;width:100%;height:100%}
-  #hud{position:fixed;inset:0;pointer-events:none;text-shadow:0 1px 2px rgba(0,0,0,.55)}
-  #hud.hurt{box-shadow:inset 0 0 120px 30px rgba(255,40,40,.5)}
-  #stars,#money,#weapon,#speed,#objective{background:var(--panel);border:1px solid var(--edge);border-radius:10px;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
-  #topright{position:absolute;top:14px;right:14px;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
-  #minimap{width:180px;height:180px;border-radius:12px;border:2px solid rgba(255,255,255,.55);background:#cfe6d8;display:block}
-  #stars{font-size:22px;letter-spacing:3px;padding:2px 10px;color:rgba(255,255,255,.28)}
-  #stars .on{color:var(--sun);text-shadow:0 0 10px rgba(255,210,74,.85)}
-  #stars.pulse{animation:pulse .42s ease-out}
-  @keyframes pulse{from{transform:scale(1.18)}}
-  #money{font-size:26px;font-weight:700;color:var(--mint);padding:2px 12px;font-variant-numeric:tabular-nums}
-  #topleft{position:absolute;top:14px;left:14px;display:flex;flex-direction:column;gap:8px}
-  .barrow{display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:2px;color:var(--muted)}
-  .bar{width:210px;height:13px;background:rgba(0,0,0,.45);border:1px solid var(--edge);border-radius:7px;overflow:hidden}
-  .bar>i{display:block;height:100%;width:100%;border-radius:6px;transition:width .14s}
-  #healthbar>i{background:linear-gradient(90deg,#ff6a5a,#ffb199)}
-  #armorbar>i{background:linear-gradient(90deg,#3f8bff,#8fd0ff)}
-  #objective{position:absolute;top:14px;left:50%;transform:translateX(-50%);max-width:560px;text-align:center;font-size:15px;padding:8px 18px}
-  #objective b{color:var(--sun)}
-  #timer{position:absolute;left:50%;top:78px;transform:translateX(-50%);font-size:22px;font-weight:700;color:var(--coral)}
-  #timer.empty,#objective.empty,#speed.empty,#crosshair.empty,#banner:not(.show){display:none}
-  #bottomright{position:absolute;right:16px;bottom:16px;display:flex;flex-direction:column;align-items:flex-end;gap:4px}
-  #weapon{font-size:18px;font-weight:600;padding:4px 12px}
-  #speed{font-size:22px;font-weight:700;color:var(--sky);padding:2px 12px;font-variant-numeric:tabular-nums}
-  #crosshair{position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:rgba(255,255,255,.92);box-shadow:0 0 0 1.5px rgba(0,0,0,.5)}
-  #toasts{position:absolute;left:16px;bottom:16px;display:flex;flex-direction:column;gap:6px;max-width:340px}
-  .toast{background:var(--solid);border-left:4px solid var(--sun);border-radius:8px;padding:7px 12px;animation:tin .22s}
-  @keyframes tin{from{opacity:0;transform:translateY(6px)}}
-  #banner{position:absolute;left:50%;top:26%;transform:translateX(-50%);font-size:34px;font-weight:800;letter-spacing:2px;color:var(--sun);text-align:center;transition:opacity .26s}
-  .screen{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 30%,rgba(255,236,200,.3),rgba(9,16,26,.82) 72%);z-index:20}
-  .screen.hidden,.hidden{display:none!important}
-  .card{background:rgba(10,17,27,.82);border-radius:18px;padding:32px 44px;max-width:660px;text-align:center;pointer-events:auto;-webkit-backdrop-filter:blur(10px)}
-  #title .title{font-size:96px;line-height:.92;font-weight:900;letter-spacing:6px;margin:0 0 10px;background:linear-gradient(180deg,#fff7e6,#ffd24a 48%,#ff8a72);-webkit-background-clip:text;background-clip:text;color:transparent}
-  .tagline{font-size:19px;letter-spacing:1px;color:var(--muted);margin:0 0 22px}
-  .sub,.shopnote{line-height:1.5;color:var(--muted);margin:0 0 18px}
-  .controls{display:grid;grid-template-columns:1fr 1fr;gap:6px 26px;max-width:460px;margin:0 auto 22px;text-align:left;color:var(--muted)}
-  .controls kbd{display:inline-block;min-width:22px;padding:1px 6px;margin-right:6px;background:rgba(255,255,255,.1);border:1px solid var(--edge);border-bottom-width:2px;border-radius:5px;font:inherit;font-size:12px;color:var(--text);text-align:center}
-  .buttons{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
-  button{font:inherit;font-size:16px;font-weight:700;letter-spacing:.6px;padding:11px 26px;border-radius:9px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.1);color:var(--text);cursor:pointer;pointer-events:auto;transition:background .12s}
-  button:hover{background:rgba(255,255,255,.2)}
-  button.primary{background:linear-gradient(180deg,#ffd24a,#ffab3d);color:#241604;border-color:rgba(0,0,0,.2)}
-  button.primary:hover{background:linear-gradient(180deg,#ffe083,#ffb65c)}
-  .foot{margin:20px 0 0;font-size:11px;letter-spacing:2px;color:rgba(255,255,255,.34)}
-  h2{margin:0 0 8px;font-size:30px;letter-spacing:1px}
-  h2.warn{color:var(--danger)}
-  h2.gold{color:var(--sun)}
-  .story{color:#ffe9c9;font-style:italic;margin:0 0 18px}
-  .reward{font-size:22px;font-weight:800;color:var(--mint);margin:0 0 18px}
-  .items{display:flex;flex-direction:column;gap:8px;margin:0 0 18px}
-  .items button{display:flex;justify-content:space-between;gap:20px;width:100%;text-align:left;font-weight:600;padding:9px 16px}
-  .items .price{color:var(--mint);font-variant-numeric:tabular-nums}
-  .items button:disabled{opacity:.4;cursor:not-allowed}
+  :root {
+    --ink: #12202e;
+    --paper: #ffffff;
+    --sun: #ffd24a;
+    --glass: rgba(14, 26, 38, 0.82);
+    --line: rgba(255, 255, 255, 0.18);
+    --good: #7ede8f;
+    --bad: #ff5b52;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: #bfe3ff; color: #fff;
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; user-select: none;
+  }
+  #app { position: fixed; inset: 0; }
+  #app canvas { display: block; width: 100%; height: 100%; }
+
+  #hud { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .25s; }
+  #hud.on { opacity: 1; }
+  #hud.hit { box-shadow: inset 0 0 120px 30px rgba(210, 20, 20, .55); }
+  #hud.hit::after { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 45%, rgba(190, 10, 10, .5)); }
+
+  .panel-hud { position: absolute; background: var(--glass); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(3px); }
+  #panel-left { left: 16px; top: 16px; padding: 10px 14px 12px; min-width: 236px; }
+  #stars { font-size: 22px; letter-spacing: 3px; line-height: 1; color: rgba(255,255,255,.25); }
+  #stars b { color: var(--sun); font-weight: 400; text-shadow: 0 0 10px rgba(255, 210, 74, .7); }
+  #stars.pulse { animation: pulse .5s ease-out; }
+  @keyframes pulse { from { transform: scale(1.22); } to { transform: scale(1); } }
+  #money { font-size: 27px; font-weight: 700; color: #c9f5b8; margin-top: 6px; }
+  .bar { position: relative; height: 11px; border-radius: 6px; background: rgba(0, 0, 0, .45); margin-top: 7px; overflow: hidden; }
+  .bar > i { position: absolute; inset: 0 auto 0 0; width: 100%; display: block; transition: width .15s; }
+  #healthbar > i { background: linear-gradient(90deg, #59d36b, #9ff08a); }
+  #armorbar > i { background: linear-gradient(90deg, #4a86ff, #8fc4ff); }
+  .bar-label { position: absolute; left: 7px; top: -1px; font-size: 9px; letter-spacing: 1px; color: rgba(255,255,255,.8); }
+
+  #panel-right { right: 16px; top: 16px; padding: 8px; }
+  #minimap { display: block; width: 180px; height: 180px; border-radius: 8px; background: #dfe9f2; }
+
+  #panel-weapon { left: 16px; bottom: 16px; padding: 9px 14px; font-size: 15px; letter-spacing: .5px; }
+  #weapon { color: #fff; }
+  #speed { position: absolute; right: 16px; bottom: 16px; padding: 8px 16px; font-size: 22px; font-weight: 700; color: #ffe9a8; }
+  #speed:empty { display: none; }
+
+  #panel-objective { left: 50%; top: 14px; transform: translateX(-50%); padding: 8px 18px; text-align: center; max-width: 640px; font-size: 14px; }
+  #objective { color: #fff; }
+  #timer { font-family: ui-monospace, Menlo, monospace; color: var(--sun); margin-left: 8px; }
+
+  #toasts { position: absolute; left: 50%; bottom: 90px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .toast { background: var(--glass); border-left: 3px solid var(--sun); padding: 6px 12px; border-radius: 6px; font-size: 14px; animation: rise .2s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  #crosshair {
+    position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+    opacity: 0; transition: opacity .2s;
+    background:
+      radial-gradient(circle, rgba(255,255,255,.9) 0 2px, transparent 2px),
+      linear-gradient(#fff, #fff) center / 2px 12px no-repeat,
+      linear-gradient(#fff, #fff) center / 12px 2px no-repeat;
+    filter: drop-shadow(0 0 2px rgba(0,0,0,.8));
+  }
+  #crosshair.on { opacity: .85; }
+
+  .panel { position: fixed; inset: 0; display: none; place-items: center; background: rgba(8, 18, 28, .55); backdrop-filter: blur(4px); z-index: 10; }
+  .panel.on { display: grid; }
+  .card { background: #fdfaf3; color: var(--ink); border-radius: 16px; padding: 28px 32px; width: min(620px, 92vw); box-shadow: 0 24px 60px rgba(0,0,0,.4); }
+  .card h1 { margin: 0; font-size: 62px; letter-spacing: 6px; line-height: 1; color: #e2492f; text-shadow: 3px 3px 0 #ffd24a; }
+  .card h2 { margin: 0 0 8px; font-size: 30px; color: #e2492f; }
+  .tag { margin: 8px 0 20px; font-size: 17px; color: #4b5b6b; }
+  .controls { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; margin: 14px 0; color: #3b4a58; }
+  .controls b { color: #12202e; font-family: ui-monospace, Menlo, monospace; background: #e8e0cc; border-radius: 4px; padding: 0 6px; justify-self: start; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; align-items: center; }
+  button { font: inherit; font-size: 15px; letter-spacing: .5px; border: 0; border-radius: 9px; padding: 11px 20px; cursor: pointer; background: #e2492f; color: #fff; font-weight: 700; }
+  button.ghost { background: #d8d2c2; color: #22303d; }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .45; cursor: default; }
+  .item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid #e6dfcf; }
+  .item:last-child { border-bottom: 0; }
+  .item .price { font-variant-numeric: tabular-nums; color: #8a6b2a; width: 84px; text-align: right; }
+  #shop-note, #pause-note { font-size: 12px; color: #6b7a88; margin-top: 12px; min-height: 16px; }
+  .foot { font-size: 11px; letter-spacing: 2px; color: #8b8371; margin-top: 18px; text-transform: uppercase; }
+  .story { font-size: 15px; line-height: 1.5; color: #3b4a58; margin: 10px 0 0; }
+  .reward { font-size: 26px; font-weight: 700; color: #2c8a4a; }
+  #title .card { text-align: left; }
+  #complete h2, #busted h2, #wasted h2 { font-size: 44px; letter-spacing: 3px; }
+  #busted .card h2 { color: #2f6bff; }
+  #wasted .card h2 { color: #a11a1a; }
+  #error { position: fixed; inset: 0; display: none; place-items: center; background: #1b0f0f; color: #ffd2d2; font-family: ui-monospace, Menlo, monospace; padding: 40px; font-size: 14px; white-space: pre-wrap; z-index: 40; }
 </style>
 </head>
 <body>
 <div id="app"></div>
-<div id="hud" class="hidden">
-  <div id="topleft">
-    <div class="barrow"><span>H</span><div class="bar" id="healthbar"><i></i></div></div>
-    <div class="barrow"><span>A</span><div class="bar" id="armorbar"><i></i></div></div>
+
+<div id="hud">
+  <section id="panel-left" class="panel-hud">
+    <div id="stars"></div>
     <div id="money">$0</div>
-  </div>
-  <div id="topright"><div id="stars"></div><canvas id="minimap" width="180" height="180"></canvas></div>
-  <div id="objective" class="empty"></div>
-  <div id="timer" class="empty"></div>
-  <div id="banner"></div>
-  <div id="crosshair"></div>
-  <div id="bottomright"><div id="speed" class="empty"></div><div id="weapon">Pistol</div></div>
+    <div class="bar" id="healthbar"><i></i><span class="bar-label">HP</span></div>
+    <div class="bar" id="armorbar"><i></i><span class="bar-label">ARMOR</span></div>
+  </section>
+
+  <section id="panel-right" class="panel-hud">
+    <canvas id="minimap" width="180" height="180"></canvas>
+  </section>
+
+  <div id="panel-objective" class="panel-hud"><span id="objective"></span><span id="timer"></span></div>
+  <div id="panel-weapon" class="panel-hud"><span id="weapon"></span></div>
+  <div id="speed" class="panel-hud"></div>
   <div id="toasts"></div>
+  <div id="crosshair"></div>
 </div>
 
-<div id="title" class="screen">
+<section id="title" class="panel on">
   <div class="card">
-    <h1 class="title">SOLARA BAY</h1>
-    <p class="tagline">Sun, chrome, and one last job.</p>
-        <div class="controls">
-      <div><kbd>WASD</kbd>Move / drive</div>
-      <div><kbd>Mouse</kbd>Look</div>
-      <div><kbd>Shift</kbd>Sprint</div>
-      <div><kbd>E</kbd>Enter / steal car</div>
-      <div><kbd>F</kbd>Fire</div>
-      <div><kbd>T</kbd>Taxi fares</div>
-      <div><kbd>Esc</kbd>Pause</div>
-      </div>
-    <div class="buttons">
-      <button id="btn-continue" class="hidden">Continue</button>
-      <button id="btn-new" class="primary">New game</button>
+    <h1>SOLARA BAY</h1>
+    <p class="tag">Sun, chrome, and one last job.</p>
+    <p class="story" id="title-story">Vesper runs a garage off Meridian. You run errands. Today the bay is warm, the cops are bored, and somebody is late returning a coral coupe.</p>
+    <div class="controls">
+      <b>W A S D</b><span>walk · drive</span>
+      <b>Shift</b><span>sprint · brake</span>
+      <b>Mouse</b><span>look (click the city to lock the pointer)</span>
+      <b>E</b><span>enter or steal a car · step out</span>
+      <b>F</b><span>fire your weapon</span>
+      <b>T</b><span>taxi: start / stop a fare run</span>
+      <b>Esc</b><span>pause</span>
     </div>
-    <p class="foot">v is for Vesper</p>
+    <div class="row">
+      <button id="btn-continue" hidden>Continue</button>
+      <button id="btn-new" class="ghost">New game</button>
+    </div>
+    <div class="foot">v is for Vesper</div>
   </div>
-</div>
+</section>
 
-<div id="pause" class="screen hidden">
+<section id="pause" class="panel">
   <div class="card">
     <h2>Paused</h2>
-    <p class="sub" id="save-status">Progress saves automatically.</p>
     <div class="controls">
-      <div><kbd>WASD</kbd>Move / drive</div>
-      <div><kbd>Mouse</kbd>Look</div>
-      <div><kbd>Shift</kbd>Sprint</div>
-      <div><kbd>E</kbd>Enter / steal car</div>
-      <div><kbd>F</kbd>Fire</div>
-      <div><kbd>T</kbd>Taxi fares</div>
-      <div><kbd>Esc</kbd>Resume</div>
-      </div>
-    <div class="buttons">
-      <button id="btn-resume" class="primary">Resume</button>
-      <button id="btn-save">Save now</button>
+      <b>W A S D</b><span>walk · drive</span>
+      <b>Shift</b><span>sprint · brake</span>
+      <b>Mouse</b><span>look</span>
+      <b>E</b><span>enter / exit a car</span>
+      <b>F</b><span>fire</span>
+      <b>T</b><span>taxi fares</span>
+      <b>R</b><span>retry a failed mission</span>
     </div>
+    <div class="row">
+      <button id="btn-resume">Resume</button>
+      <button id="btn-save" class="ghost">Save now</button>
+      <button id="btn-quit" class="ghost">Title screen</button>
+    </div>
+    <div id="pause-note"></div>
   </div>
-</div>
+</section>
 
-<div id="shop" class="screen hidden">
+<section id="shop" class="panel">
   <div class="card">
     <h2>Vine Mart</h2>
-    <p class="sub">Cash only. Nothing here is on the books.</p>
-    <div class="items">
-      <button data-buy="rifle"><span>Rifle</span><span class="price">$600</span></button>
-      <button data-buy="ammo"><span>Ammo +60</span><span class="price">$100</span></button>
-      <button data-buy="armor"><span>Armor</span><span class="price">$250</span></button>
-      <button data-buy="medkit"><span>Medkit</span><span class="price">$50</span></button>
-    </div>
-    <p class="shopnote" id="shop-money">You have $0.</p>
-    <div class="buttons"><button id="btn-shop-close" class="primary">Leave</button></div>
+    <p class="tag">Cold drinks, warm ammo. Cash only.</p>
+    <div id="shop-items"></div>
+    <div class="row"><button id="btn-shop-close" class="ghost">Back to the street</button></div>
+    <div id="shop-note"></div>
   </div>
-</div>
+</section>
 
-<div id="complete" class="screen hidden">
+<section id="complete" class="panel">
   <div class="card">
-    <h2 class="gold">Mission complete</h2>
+    <h2 id="complete-title">Mission complete</h2>
     <p class="story" id="complete-story"></p>
     <p class="reward" id="complete-reward"></p>
-    <div class="buttons"><button id="btn-next-mission" class="primary">Next mission</button></div>
+    <div class="row">
+      <button id="btn-next">Next mission</button>
+      <button id="btn-complete-close" class="ghost">Stay out here</button>
+    </div>
   </div>
-</div>
+</section>
 
-<div id="busted" class="screen hidden">
+<section id="busted" class="panel">
   <div class="card">
-    <h2 class="warn">Busted</h2>
-    <p class="sub">Sable Row booked you, took the fee and let you walk.</p>
-    <div class="buttons"><button id="btn-busted" class="primary">Continue</button></div>
+    <h2>BUSTED</h2>
+    <p class="story">Sable Row booking desk takes your fine and lets you walk at dawn.</p>
+    <p class="reward" id="busted-fee"></p>
+    <div class="row"><button id="btn-busted">Step outside</button></div>
   </div>
-</div>
+</section>
 
-<div id="wasted" class="screen hidden">
+<section id="wasted" class="panel">
   <div class="card">
-    <h2 class="warn">Wasted</h2>
-    <p class="sub">Cedar View put you back together. The bill is already paid.</p>
-    <div class="buttons"><button id="btn-wasted" class="primary">Continue</button></div>
+    <h2>WASTED</h2>
+    <p class="story">Cedar View patched you up. The bill arrived before you woke.</p>
+    <p class="reward" id="wasted-fee"></p>
+    <div class="row"><button id="btn-wasted">Leave the hospital</button></div>
   </div>
-</div>
+</section>
+
+<div id="error"></div>
 
 <script type="importmap">
-{"imports":{"three":"./vendor/three/three.module.min.js"}}
+{ "imports": { "three": "./vendor/three/three.module.min.js" } }
 </script>
 <script type="module" src="./src/main.js"></script>
 </body>

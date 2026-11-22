@@ -1,14 +1,16 @@
-// Solara Bay — every tunable number for the city, the people and the rules of the bay.
+// Every tunable number of Solara Bay in one place. World units are metres,
+// speeds are m/s, times are seconds, angles are radians unless a key says else.
+// Nothing here reads the DOM or the URL: main.js decides, config just pins.
 
 export const CONFIG = {
   world: {
-    half: 200,
-    sea: -172,
-    pitch: 80,
-    roadHalf: 6,
-    sidewalk: 3,
-    blockUsable: 68,
-    parkRect: { minX: -74, maxX: -6, minZ: -74, maxZ: -6 },
+    half: 200, // the ground spans x,z in [-half, half]
+    sea: -172, // ocean west of this x
+    pitch: 80, // street spacing on both axes
+    roadHalf: 6, // asphalt is 12 m wide
+    sidewalk: 3, // walkable strip either side of the asphalt
+    blockUsable: 68, // a block between sidewalks is 68 m across
+    parkRect: { x0: -74, x1: -6, z0: -74, z1: -6 },
   },
 
   player: {
@@ -17,11 +19,14 @@ export const CONFIG = {
     hp: 100,
     camDistFoot: 5.5,
     camHeight: 1.6,
+    radius: 0.45,
+    camDistCar: 8.5,
+    interact: 3.2, // how close a car must be to enter it
   },
 
   weapons: {
-    pistol: { dmg: 34, rate: 3, spread: 0.012, infinite: true },
-    rifle: { dmg: 25, rate: 8, spread: 0.02, ammoPerBuy: 60 },
+    pistol: { dmg: 34, rate: 3, spread: 0.012, infinite: true, name: 'Pistol' },
+    rifle: { dmg: 25, rate: 8, spread: 0.02, ammoPerBuy: 60, name: 'Rifle' },
   },
 
   car: {
@@ -40,6 +45,10 @@ export const CONFIG = {
     speed: 9,
     laneOffset: 3.2,
     probeAhead: 6,
+    recycleNear: 90,
+    recycleFar: 130,
+    turnChance: 0.4,
+    resumeAfter: 1.2,
   },
 
   peds: {
@@ -47,28 +56,26 @@ export const CONFIG = {
     speed: 1.4,
     flee: 5.2,
     hp: 40,
+    respawn: 20,
   },
 
   wanted: {
     decay: { 1: 30, 2: 60, 3: 60, 4: 60, 5: 60 },
-    theftOccupied: 1,
-    policeCar: 2,
-    hitPed: 2,
-    shootPed: 3,
-    killPed: 3,
-    killCop: 3,
-    rampageKills: 3,
-    rampageWindow: 20,
+    seeDist: 40,
+    starsFor: {
+      theftOccupied: 1,
+      policeCar: 2,
+      hitPed: 2,
+      shootPed: 3,
+      killPed: 3,
+      killCop: 3,
+      rampageKills: 3,
+      rampageSec: 20,
+    },
   },
 
   police: {
-    perStar: {
-      1: [1, 0],
-      2: [2, 1],
-      3: [3, 2],
-      4: [4, 3],
-      5: [5, 4],
-    },
+    count: { 1: [1, 0], 2: [2, 1], 3: [3, 2], 4: [4, 3], 5: [5, 4] },
     foot: {
       hp: 60,
       run: 6.5,
@@ -79,13 +86,14 @@ export const CONFIG = {
       arrestDist: 3.0,
       arrestHpBelow: 25,
     },
-    car: {
-      ram: 10,
+    carChase: {
+      ram: 6,
       dropDist: 260,
+      spawnMin: 60,
+      spawnMax: 80,
+      lead: 3, // seconds of player movement the cars aim ahead
     },
-    seeRange: 40,
-    roadblockEvery: 20,
-    roadblockAhead: 60,
+    roadblock: { stars: 4, dist: 60, every: 20 },
   },
 
   economy: {
@@ -98,7 +106,9 @@ export const CONFIG = {
     fareMax: 150,
     hospitalFee: 100,
     bustedFee: 150,
-    saveKey: 'solara-bay-save-v1',
+    armorCap: 100,
+    fareNear: 4,
+    shopRadius: 4.5,
   },
 
   missions: {
@@ -107,7 +117,19 @@ export const CONFIG = {
     m3: 1500,
     m2EvadeSec: 90,
     m3DeliverySec: 120,
+    giverRadius: 4,
+    deliverRadius: 5,
   },
+
+  hud: {
+    toasts: 3,
+    toastMs: 2500,
+    moneyRollMs: 700,
+  },
+
+  saveKey: 'solara-bay-save-v1',
+  saveEvery: 10,
 };
 
+/** One simulation step: the loop runs at a fixed 60 Hz and renders whatever it has. */
 export const STEP = 1 / 60;

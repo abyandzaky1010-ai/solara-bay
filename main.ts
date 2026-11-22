@@ -1,47 +1,66 @@
-// Solara Bay — make.fun competition gta6-01 hand-in program.
-// Copies game/ and screenshots/ to the output directory and writes dossier.json for the entry.
+// Solara Bay — dossier builder.
+// Copies game/ and screenshots/ into the output directory, then writes the
+// make.fun dossier there with the same vendored buildDossier the scorer runs,
+// so the two match byte for byte.
+//
+//   node main.ts                     # output to $MAKEFUN_OUTPUT_DIR or /output
+//   MAKEFUN_OUTPUT_DIR=./out node main.ts
+//
+// Node 22, standard library only. Runs from the repository root.
 
-import { cpSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildDossier } from './vendor/makefun-game.ts';
+import { DossierError, buildDossier } from './vendor/makefun-game.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const OUT = process.env.MAKEFUN_OUTPUT_DIR || '/output';
 
-function handIn(repo: string, out: string): void {
-  rmSync(join(out, 'game'), { recursive: true, force: true });
-  rmSync(join(out, 'screenshots'), { recursive: true, force: true });
-  cpSync(join(repo, 'game'), join(out, 'game'), { recursive: true });
-  cpSync(join(repo, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+/** What the gate holds the entry to. */
+const CAPS = {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+  game_path_max_bytes: 1000,
+} as const;
 
-  const dossier = buildDossier(out, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  });
-  writeFileSync(join(out, 'dossier.json'), dossier);
-
-  const games = countFiles(join(out, 'game'));
-  const shots = readdirSync(join(out, 'screenshots')).length;
-  console.log(`solara-bay: ${games} game files, ${shots} screenshots, dossier.json ${dossier.byteLength} bytes -> ${out}`);
+/** Where the entry lands: MAKEFUN_OUTPUT_DIR when set, else /output. */
+function outputDir(): string {
+  const fromEnv = (process.env.MAKEFUN_OUTPUT_DIR ?? '').trim();
+  return resolve(fromEnv === '' ? '/output' : fromEnv);
 }
 
-function countFiles(dir: string): number {
-  let total = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) total += countFiles(join(dir, entry.name));
-    else total += 1;
-  }
-  return total;
+/** Copy one directory of the entry into the output, replacing what was there. */
+function copyDir(name: string, dest: string): number {
+  const from = join(HERE, name);
+  if (!existsSync(from) || !statSync(from).isDirectory()) throw new Error(`${name}/: missing from the repository root`);
+  const to = join(dest, name);
+  rmSync(to, { recursive: true, force: true });
+  cpSync(from, to, { recursive: true });
+  return readdirSync(to, { recursive: true }).length;
+}
+
+/** Write the dossier and say what it holds. */
+function main(): void {
+  const out = outputDir();
+  mkdirSync(out, { recursive: true });
+  const gameEntries = copyDir('game', out);
+  const images = copyDir('screenshots', out);
+  const dossier = buildDossier(out, CAPS);
+  const target = join(out, 'dossier.json');
+  writeFileSync(target, dossier);
+  const header = /"text":"([^"]*)/.exec(dossier.toString('latin1'))?.[1] ?? '';
+  console.log(`Solara Bay: ${gameEntries} game entries, ${images} screenshots, dossier ${dossier.length} bytes -> ${target}`);
+  console.log(`dossier text starts: ${header.slice(0, 60).replace(/\\n/g, ' | ')}`);
 }
 
 try {
-  mkdirSync(OUT, { recursive: true });
-  handIn(HERE, OUT);
-} catch (err) {
-  console.error(`solara-bay: hand-in failed: ${err instanceof Error ? err.message : String(err)}`);
+  main();
+} catch (error) {
+  if (error instanceof DossierError) {
+    console.error(`dossier refused${error.limit === null ? '' : ` (${error.limit})`}: ${error.message}`);
+  } else {
+    console.error(`build failed: ${(error as Error).message}`);
+  }
   process.exitCode = 1;
 }

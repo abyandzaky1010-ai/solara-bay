@@ -1,207 +1,44 @@
-import { CONFIG, STEP } from './config.js';
-import { makeRng } from './random.js';
-import { createInput } from './input.js';
-import { initWorld, updateCamera, renderFrame } from './world.js';
-import { buildCity } from './city.js';
-import { createPlayer, updatePlayerFoot, updatePlayerTimers, fireWeapon, damagePlayer as hurt, respawnPlayer, stowPlayer, unseatPlayer, givePickup } from './player.js';
-import { makeCar, updateCarDrive, canEnterCar, addCarToScene, doorPoint } from './car.js';
-import { spawnTraffic, updateTraffic } from './traffic.js';
-import { spawnPeds, makeFarePed, updatePeds, damagePed } from './peds.js';
-import { initPolice, addStars, updatePolice, damageCop, copShootTargets } from './police.js';
-import { initMissions, startMission, updateMissions } from './missions.js';
-import { initEconomy, addMoney, chargeFee, buyItem, toggleFareDuty, updateFares, saveGame, loadGame, dueSave } from './economy.js';
-import { createHUD, updateHUD, drawMinimap, toast, showPanel as pane, hidePanels as blanks } from './hud.js';
-import { initSfx, S, engineOn, engineUpdate, engineOff, siren } from './sfx.js';
-import { initEffects, spawnTracer, spawnMuzzle, spawnExplosion, spawnSmokePuff, flashDamage, updateEffects } from './render.js';
-import { applyShot } from './shots.js';
-
-const WT = CONFIG.wanted, ECO = CONFIG.economy, KINDS = CONFIG.car.kinds, EL = (i) => document.getElementById(i);
-const far = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
-const close = (G) => (blanks(G.H), (G.screen = "play"), G.I.lock());
-const note = (G, t) => toast(G.H, t);
-
-function fail(err) {
-  const m = (err && err.message) || String(err);
-  document.title = ("SB-error-" + m).slice(0, 100);
-  document.body.appendChild(Object.assign(document.createElement("pre"), { textContent: m }));
+import{CONFIG as R,STEP}from'./config.js';
+import{makeRng}from'./random.js';
+import{createInput}from'./input.js';
+import{initWorld,updateCamera,renderFrame}from'./world.js';
+import{buildCity}from'./city.js';
+import{createPlayer,updatePlayerFoot,updatePlayerTimers,fireWeapon,damagePlayer,respawnPlayer,stowPlayer,unseatPlayer,givePickup}from'./player.js';
+import{makeCar,addCarToScene,doorPoint,updateCarDrive}from'./car.js';
+import{spawnTraffic,updateTraffic}from'./traffic.js';
+import{spawnPeds,makeFarePed,damagePed,updatePeds}from'./peds.js';
+import{initPolice,updatePolice,addStars,damageCop}from'./police.js';
+import{initMissions,updateMissions}from'./missions.js';
+import{initEconomy as eco,addMoney,chargeFee,SHOP,buyItem,toggleFareDuty,updateFares,saveGame,loadGame,dueSave}from'./economy.js';
+import{createHUD,updateHUD,toast,setBanner,drawMinimap,showPanel,hidePanels,fillShop}from'./hud.js';
+import{initSfx,resumeSfx,S,engineOn,engineUpdate,engineOff}from'./sfx.js';
+import*as FX from'./render.js';
+import{applyShot}from'./shots.js';
+let G,UI;
+const EC=R.economy,SF=R.wanted.starsFor,D=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
+const $=(id)=>document.getElementById(id),on=(q,f)=>q?.addEventListener('click',f);
+const say=(t,ms=2000)=>setBanner(G.H,t,ms),T=(t)=>toast(G.H,t);
+function screen(n){G.screen=n;if(n==='title')showPanel(G.H,'title');else if(n==='pause')UI.note.textContent='Save on · job '+(Math.min(3,(G.M.index|0)+1))+'/3',showPanel(G.H,'pause');else hidePanels(G.H);if(n!=='play')document.body.classList.remove('locked');}
+const street=()=>(hidePanels(G.H),G.screen='play',G.I.lock());
+const leaveCard=()=>(G.P.armor=0,street());
+function endRun(what,node,key,dx,dz,fee,why){ if(G.screen!=='play'||(what==='busted'&&G.P.dead))return;const had=G.E.money,m=G.city.markers[key];G.sound.siren(false);if(G.inCar)leave();chargeFee(G.E,fee,G.H),UI[node].textContent=`−$${had - G.E.money} · $${G.E.money}`;showPanel(G.H,what),(G.screen=what),G.sound.chime(),(G.P.armor=what==='wasted'?0:G.P.armor);Object.assign(G.PO,{ stars: 0,noSeeT: 0 }),document.body.classList.remove('locked'),say(why,2400),respawnPlayer(G.P,G,{x:m.x+dx,z:m.z+dz});}
+const bust=()=>endRun('busted','bustedFee','station',3.5,6,EC.bustedFee,'Bailed at Sable Row.');
+const wasted=()=>endRun('wasted','wastedFee','hospital',3,4,EC.hospitalFee,'Cedar View bills.');
+function board(){ if (G.P.dead) return;const q=G.cars.concat(G.traffic).filter((c)=>!c.wrecked&&D(c,G.P.pos)<=R.player.interact).sort((a,b)=>D(a,G.P.pos)-D(b,G.P.pos));return q[0]?enter(q[0]):T('No car here.');}
+function enter(car){ if (!car||car.wrecked) return T('It is a shell.');if (car.traffic) G.traffic.splice(G.traffic.indexOf(car),1),G.cars.push(Object.assign(car,{ traffic: false }));const seen=car.occupant==='npc';car.occupant=null;car.player=true;G.inCar=car,stowPlayer(G.P),G.sound.engineOn(car.kind);if (!seen) return;const n=car.kind==='police'?SF.policeCar:G.peds.some((p)=>!p.riding&&D(p.pos,car)<14)?SF.theftOccupied:0;n&&(addStars(G.PO,n,G),say(car.kind==='police'?'A cruiser: two stars.':'Witnessed: one star.',1600));}
+function leave(){ const car=G.inCar;if (!car) return;const at=doorPoint(car,G.W);unseatPlayer(G.P,at.x,at.z,at.heading);car.player=false;car.occupant=car.kind==='police'?'npc':null;G.inCar=null,G.sound.engineOff(),G.sound.siren(false);if (G.E.fares) toggleFareDuty(G.E,G);}
+function retry(){ if(!G.M.failed)return;Object.assign(G.M,{failed:null,active:null}),G.inCar&&leave();const m=G.city.markers.glassOrchid;respawnPlayer(G.P,G,{x:m.x+1.5,z:m.z+3.5}),street();}
+function keys(){ document.addEventListener('keydown',(e)=>{ const k=e.code;if (G.screen!=='play') return;if (k==='KeyE') G.inCar?leave():board();else if (k==='KeyF') G.inCar?G.sound.honk():fireWeapon(G.P,G);else if (k==='KeyT') G.inCar?toggleFareDuty(G.E,G):T('Taxi only.');else if (k==='KeyR') retry();});document.addEventListener('pointerlockchange',()=>{G.screen==='play'&&!document.pointerLockElement&&screen('pause');});}
+function begin(saved){ const P=G.P;if(saved){G.E.money=saved.money;G.M.index=G.M.done=Math.min(3,saved.missionIndex|0);P.rifle=!!saved.rifle;P.ammo=Math.max(0,saved.ammo|0);P.armor=Math.min(EC.armorCap,Math.max(0,saved.armor|0));P.weapon=P.rifle&&P.ammo>0?'rifle':'pistol';} respawnPlayer(P,G,G.city.spawns.playerStart);G.inCar=null,G.alarm=0,street(),G.sound.chime();say(saved?'Back in the bay.':'Vesper is at the Orchid.',2600);}
+function tick(dt){ if(G.screen!=='play')return;const P=G.P,I=G.I,car=G.inCar;if(P.dead)return updatePlayerTimers(P,dt);updatePolice(G.PO,G,dt);if(car){ if(car.wrecked)return leave();const k=(a,b)=>(I.down(a)||I.down(b)?1:0);updateCarDrive(car,k('KeyW','ArrowUp') - k('KeyS','ArrowDown'),k('KeyA','ArrowLeft') - k('KeyD','ArrowRight'),I.down('ShiftLeft')||I.down('ShiftRight'),dt,G.W,G);P.pos.set(car.x,0,car.z);G.sound.engineUpdate(Math.min(1,Math.abs(car.speed) / 24));} else updatePlayerFoot(P,G,I,dt),updatePlayerTimers(P,dt);updateTraffic(G.traffic,G.W,G,dt),updatePeds(G.peds,G.W,G,dt);updateMissions(G.M,G,dt),updateFares(G.E,G,dt);if(!P.rifle&&!car&&D(P.pos,G.city.pickup)<2.2)givePickup(P,G,'rifle');if(G.alarm>0)G.alarm=Math.max(0,G.alarm-dt*0.4);G.time+=dt;dueSave(G.E,G);}
+function cam(dt){ const W=G.W,c=G.inCar;if(!c)return updateCamera(W,G.I,{x:G.P.pos.x,y:1.6,z:G.P.pos.z,dist:R.player.camDistFoot},dt);const w=c.speed<-0.5?c.heading+Math.PI:c.heading;W.yaw+=(((w-W.yaw+Math.PI*3)%(Math.PI*2))-Math.PI)*Math.min(1,dt*3.2),W.pitchAngle=0.3;updateCamera(W,{mouse:()=>({dx:0,dy:0})},{x:c.x,y:1.5,z:c.z,dist:8.4},dt);}
+function wire(){ const g=G,L=g.W.renderer.domElement;L.addEventListener('pointerdown',()=>(resumeSfx(),g.screen==='play'&&g.I.lock()));for (const k of ['out','wake']) on(UI[k],leaveCard);for (const k of ['resume','shopClose','next','stay']) on(UI[k],street);on(UI.save,()=>UI.note.textContent=saveGame(g)?'Saved.':'No storage.');on(UI.quit,()=>(saveGame(g),screen('title')));UI.shopList.addEventListener('click',(e)=>{ const i=e.target?.dataset?.buy;i&&(buyItem(g.E,g.P,i,g),fillShop(SHOP,g.H,g.E.money));});Object.assign(g,{ onPedHit: (p,dead)=>addStars(g.PO,dead?SF.killPed:SF.shootPed,g),damagePed: (p,n)=>damagePed(p,n,g),damageCop: (c,n)=>damageCop(g.PO,c,n,g),damageTrafficCar: (c,n)=>{if(c&&!c.wrecked)c.hp=Math.max(0,(c.hp??R.car.hp)-(n||0));},damagePlayer: (n)=>damagePlayer(g.P,n,g),explodeCar: (c)=>{ c &&!c.wrecked &&(c.hp=0);},onCarExplode: (c)=>c?.police &&addStars(g.PO,SF.policeCar,g),bust,wasted,missionStart: ()=>saveGame(g),failPanel: (t)=>(say(t,3200),T('Failed. R retries.')),missionComplete: (pay,story)=>{ addMoney(g.E,pay,g.H),(UI.story.textContent=story),(UI.reward.textContent=`+$${pay}`);showPanel(g.H,'complete'),(g.screen='complete'),g.sound.jingle(true),document.body.classList.remove('locked'),saveGame(g);},spawnFare: (x,z)=>g.peds.push(makeFarePed(g.W,g.city,g.rng,x,z)) &&g.peds.at(-1),});}
+function loop(){ let l=0,acc=0,n=0;const fr=(now)=>{const real=l?Math.min(.25,(now-l)/1000):STEP;l=now,acc=Math.min(.25,acc+real);for(let i=0;i<5&&acc>=STEP;i+=1)tick(STEP),acc-=STEP;cam(real),renderFrame(G.W),(n += 1) % 2===0 &&drawMinimap(G.H,G);updateHUD(G.H,G,real),FX.updateEffects(G.W,real),G.I.endFrame();requestAnimationFrame(fr);};requestAnimationFrame(fr);}
+function boot(){ const q=new URLSearchParams(location.search),rng=makeRng(+q.get('seed')||1337),cv=document.createElement('canvas');($('app')||document.body).appendChild(cv);const W=initWorld(cv),city=buildCity(W,rng),saved=loadGame(),P=createPlayer(W,city);const cars=city.spawns.carParks.map((p)=>addCarToScene(W,makeCar(p.kind,p.x,p.z,p.heading??0,p.color)));const m1car=cars[city.spawns.carParks.findIndex((p)=>p.tag==='m1car')]||cars[0];m1car.m1=true,FX.initEffects(W);G={ W,city,cars,rng,m1car,saved,P,H: createHUD(),I: createInput(cv),E: eco(saved),M: initMissions(),traffic: spawnTraffic(W,rng,R.traffic.count),peds: spawnPeds(W,city,rng,R.peds.count),PO: initPolice(W,city,rng),screen:'title',inCar:null,alarm:0,alarmX:0,alarmZ:0,time:0,saveT:0,shot:q.get('shot'),objective:null,cops:[],world:W,player:P,weapons:R.weapons,effects:FX,sound:{...S,engineOn,engineOff,engineUpdate}};initSfx();UI={};for(const p of 'complete-story:story complete-reward:reward pause-note:note busted-fee:bustedFee wasted-fee:wastedFee btn-continue:cont btn-new:fresh btn-resume:resume btn-save:save btn-quit:quit shop-items:shopList btn-next:next btn-busted:out btn-wasted:wake btn-shop-close:shopClose btn-complete-close:stay'.split(' ')){const[id,k]=p.split(':');UI[k]=$(id);} wire(),keys();UI.cont.hidden=!saved;on(UI.cont,()=>(resumeSfx(),begin(loadGame()))),on(UI.fresh,()=>(resumeSfx(),begin(null)));fillShop(G.H,SHOP,G.E.money),screen('title'),respawnPlayer(G.P,G,city.spawns.playerStart);if (G.shot) applyShot(G.shot,G);loop(),(window.__sb=G);}
+try {
+	boot();
+} catch (err){
+	const box=$('error');
+	if(box)box.style.display='block',box.textContent='Solara Bay failed to start: '+(err?.message||err);
+	document.title='SB-error-boot';
 }
-
-// Busted or wasted: the fee, a clean record, and a ride to the station or the hospital.
-function busted(G, k) {
-  if (G.screen !== "play") return;
-  G.inCar = null;
-  engineOff();
-  siren(false);
-  chargeFee(G.E, k === "busted" ? ECO.bustedFee : ECO.hospitalFee, G.H);
-  Object.assign(G.PO, { stars: 0, noSeeT: 0 });
-  respawnPlayer(G.P, G, G.city.markers[k === "busted" ? "station" : "hospital"]);
-  G.screen = k;
-  pane(G.H, k);
-  saveGame(G);
-}
-
-function nearest(G) {
-  const p = G.P.pos;
-  return G.cars.concat(G.traffic).filter((c) => c && !c.wrecked && !c.player && far(c, p) < 3.2)
-    .sort((a, b) => far(a, p) - far(b, p))[0];
-}
-
-function enter(G, car) {
-  const steal = car.occupant === "npc";
-  if (G.P.dead || !canEnterCar(car, G.P.pos.x, G.P.pos.z)) return;
-  car.occupant = null;
-  car.player = true;
-  G.inCar = car;
-  stowPlayer(G.P);
-  engineOn(car.kind);
-  S.chime();
-  if (steal) note(G, "Carjacked. E to step out.");
-  if (car.kind === "police") note(G, "Police car taken. E to step out.");
-  addStars(G.PO, steal ? WT.theftOccupied : car.kind === "police" ? WT.policeCar : 0, G);
-}
-
-function leave(G) {
-  const car = G.inCar;
-  if (!car) return;
-  const s = doorPoint(car, G.W);
-  unseatPlayer(G.P, s.x, s.z, s.heading);
-  car.player = false;
-  G.inCar = null;
-  engineOff();
-  if (G.E.fares) toggleFareDuty(G.E, G);
-}
-
-function shop(G) {
-  if (G.inCar || far(G.P.pos, G.city.markers.vineMart) > 3) return note(G, "Vine Mart is on the Meridian kerb.");
-  G.screen = "shop";
-  pane(G.H, "shop");
-  const m = EL("shop-money");
-  if (m) m.textContent = `You have $${Math.max(0, Math.round(G.E.money))}.`;
-}
-
-function wire(G) {
-  const H = G.H, E = G.E, P = G.P, on = (id, fn) => EL(id) && EL(id).addEventListener("click", fn);
-  const go = () => close(G), start = () => (close(G), startMission(G.M, G));
-  ["btn-resume", "btn-shop-close", "btn-busted", "btn-wasted"].forEach((id) => on(id, go));
-  on("btn-new", start);
-  on("btn-next-mission", start);
-  on("btn-continue", () => {
-    const s = loadGame() || {};
-    Object.assign(E, { money: s.money || ECO.start });
-    Object.assign(P, { rifle: !!s.rifle, ammo: s.ammo | 0, armor: s.armor | 0 });
-    G.M.index = Math.min(s.missionIndex | 0, 3);
-    go();
-  });
-
-  on("btn-save", () => saveGame(G) && toast(H, "Saved."));
-  for (const b of document.querySelectorAll("[data-buy]")) b.onclick = () => buyItem(E, P, b.dataset.buy, G);
-  EL("app").addEventListener("mousedown", () => G.screen === "play" && !G.inCar && (G.I.locked ? (G.fire = true) : G.I.lock()));
-  EL("btn-continue").classList.toggle("hidden", !loadGame());
-}
-
-function keys(G) {
-  const I = G.I, P = G.P, k = (c) => I.wasPressed(c);
-  if (k("KeyE")) G.inCar ? leave(G) : nearest(G) && enter(G, nearest(G));
-  if (k("KeyQ")) P.weapon = P.weapon === "rifle" ? "pistol" : "rifle";
-  if (k("KeyB") && !G.inCar) shop(G);
-  if (k("KeyT")) toggleFareDuty(G.E, G);
-  if (!G.inCar && (k("KeyF") || G.fire) && !P.dead) fireWeapon(P, G);
-  G.fire = false;
-}
-
-function world(G, dt) {
-  const I = G.I, P = G.P, c = G.inCar, d = (a, b) => (I.down(a) || I.down(b) ? 1 : 0);
-  if (c) {
-    updateCarDrive(c, d("KeyW", "ArrowUp"), d("KeyD", "ArrowRight") - d("KeyA", "ArrowLeft"), d("Space"), dt, G.W, G);
-    engineUpdate(Math.min(1, Math.abs(c.speed) / (KINDS[c.kind] || KINDS.sedan).max), dt);
-    if (c.wrecked) leave(G);
-  } else updatePlayerFoot(P, G, I, dt);
-  updatePlayerTimers(P, dt);
-  updateTraffic(G.traffic, G.W, G, dt) || updatePeds(G.peds, G.W, G, dt);
-  G.cops = copShootTargets(G.PO);
-  updatePolice(G.PO, G, dt) || updateMissions(G.M, G, dt);
-  updateFares(G.E, G, dt);
-  updateEffects(G.W, dt) || dueSave(G.E, G, dt);
-}
-
-function frame(G, dt) {
-  const I = G.I, c = G.inCar;
-  if (G.screen === "play") {
-    G.acc += Math.min(dt, 0.2);
-    for (G.steps = 0; G.acc >= STEP && G.steps < 5; G.steps += 1) G.acc -= STEP, keys(G), world(G, STEP);
-    if (G.steps === 5) G.acc = 0;
-  }
-  updateCamera(G.W, I, c ? { x: c.x, y: 1.4, z: c.z, dist: 7.2 } : { x: G.P.pos.x, y: 1.6, z: G.P.pos.z, dist: CONFIG.player.camDistFoot }, dt);
-  renderFrame(G.W);
-  updateHUD(G.H, G, dt);
-  G.hf = (G.hf || 0) + 1;
-  if (G.hf % 2 === 0) drawMinimap(G.H, G);
-  I.endFrame();
-}
-
-function boot() {
-  const q = new URLSearchParams(location.search), shot = q.get("shot"), rng = makeRng(Number(q.get("seed")) || 1337);
-  const canvas = EL("app").appendChild(document.createElement("canvas"));
-  const W = initWorld(canvas), city = buildCity(W, rng), P = createPlayer(W, city);
-  const cars = city.spawns.carParks.map((k) => addCarToScene(W, makeCar(k.kind, k.x, k.z, k.heading, k.color)));
-  const traffic = spawnTraffic(W, rng, 11), peds = spawnPeds(W, city, rng, 15);
-  const PO = initPolice(W, city, rng), M = initMissions(), E = initEconomy(loadGame()), H = createHUD();
-  initSfx();
-  initEffects(W);
-  const I = createInput(canvas);
-  const G = {
-    W, city, P, cars, m1car: cars[5], traffic, peds, PO, M, H, I, rng, E, sound: { ...S, siren, engineOn, engineUpdate, engineOff },
-    addMoney: (n) => addMoney(E, n, H), shot: shot || null, screen: "title", inCar: null, alarm: 0, acc: 0, fire: false, objective: null,
-    effects: { spawnTracer, spawnMuzzle, spawnExplosion, spawnSmokePuff, flashDamage },
-  };
-  const law = (n) => addStars(PO, n, G);
-  G.damagePlayer = (n) => hurt(P, n, G);
-  G.damagePed = (p, n) => damagePed(p, n, G);
-  G.damageCop = (o, n) => damageCop(PO, o, n, G);
-  G.damageTrafficCar = (c, n) => { c.hp -= n; c.hp <= 0 && G.explodeCar(c); };
-  G.spawnFare = (x, z) => peds[peds.push(makeFarePed(W, city, rng, x, z)) - 1];
-  G.onPedHit = (p, dead) => {
-    if (!p || p.fare) return;
-    law(dead ? WT.killPed : WT.hitPed);
-    if (!dead) return;
-    G.kills = (G.kills || []).concat(G.time).filter((t) => G.time - t <= WT.rampageWindow);
-    if (G.kills.length >= WT.rampageKills) { G.kills = []; law(1); }
-  };
-  G.explodeCar = (c) => {
-    if (!c) return;
-    Object.assign(c, { wrecked: true, hp: 0, speed: 0 });
-    spawnExplosion({ x: c.x, y: 1, z: c.z });
-    S.explode();
-    for (const t of peds.concat(PO.foot)) if (!t.down && far(t.pos, c) < 6) damagePed(t, 999, G) || damageCop(PO, t, 999, G);
-    if (!G.inCar && far(P.pos, c) < 8) hurt(P, 40, G);
-  };
-  G.missionComplete = (reward, story) => (
-    G.addMoney(reward), story && (EL("complete-story").textContent = story), (G.screen = "complete"), pane(H, "complete"), saveGame(G)
-  );
-  G.bust = () => busted(G, "busted");
-  G.wasted = () => busted(G, "wasted");
-  wire(G);
-
-  window.addEventListener("keydown", (e) => {
-    const k = e.code;
-    if (k !== "Escape" && k !== "KeyR") return;
-    if (G.screen === "pause") return close(G);
-    if (k === "KeyR") return G.screen !== "play" && close(G);
-    G.screen = "pause";
-    pane(H, "pause");
-    document.exitPointerLock();
-  });
-
-  city.pickup && far(P.pos, city.pickup) < 2 && givePickup(P, G, "rifle");
-  if (shot) applyShot(shot, G);
-
-  let t0 = performance.now();
-  const tick = (now) => {
-    try { frame(G, Math.min(0.1, (now - t0) / 1000)); t0 = now; } catch (err) { return fail(err); }
-    requestAnimationFrame(tick);
-  };
-  frame(G, 1 / 60);
-  requestAnimationFrame(tick);
-}
-
-try { boot(); } catch (err) { fail(err); }
